@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 220" role="img" aria-labelledby="title desc">
+  <title id="title">Image Analysis Studio</title>
+  <desc id="desc">Green and dark wordmark logo for the standalone dashboard.</desc>
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7fba2b"/>
+      <stop offset="100%" stop-color="#4e7616"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#dff0c7" stop-opacity="0.95"/>
+    </linearGradient>
+  </defs>
+  <rect x="10" y="10" width="700" height="200" rx="34" fill="#ffffff" fill-opacity="0.08"/>
+  <circle cx="112" cy="110" r="72" fill="url(#g1)"/>
+  <path d="M80 112c18-34 35-52 49-52 21 0 32 16 43 42 11 25 23 38 42 38 13 0 26-6 38-18" fill="none" stroke="url(#g2)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M74 82h76M86 110h54M78 138h66" stroke="#ffffff" stroke-opacity="0.92" stroke-width="10" stroke-linecap="round"/>
+  <text x="220" y="108" font-family="Arial, Helvetica, sans-serif" font-size="52" font-weight="700" fill="#173836">Image Analysis</text>
+  <text x="220" y="156" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="600" letter-spacing="1.2" fill="#5c655a">STUDIO</text>
+</svg>
