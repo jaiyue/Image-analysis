@@ -1,9 +1,10 @@
 # library.py — Library page for Image-analysis standalone app
 import streamlit as st
 import pandas as pd
-from image_processing import process_image_to_grayscale, detect_and_crop_red_bars
+from image_processing import (
+    process_image_to_grayscale,
+)
 from pathlib import Path
-import io
 import json
 from datetime import datetime
 try:
@@ -46,19 +47,14 @@ def render_library_page():
                 break
             try:
                 img = Image.open(uploaded).convert('RGB')
-                # perform red-bar detection and crop before grayscale
-                try:
-                    cropped = detect_and_crop_red_bars(img, padding_cm=1.0)
-                except Exception:
-                    cropped = img
 
                 # generate an incremental 5-digit ID
                 st.session_state['library_id_counter'] += 1
                 img_id_int = st.session_state['library_id_counter']
                 img_id = f"{img_id_int:05d}"
-                # generate grayscale version (use cropped image)
+                # generate grayscale version
                 gray = process_image_to_grayscale(
-                    cropped, resize_to=(1024, 1024))
+                    img.copy(), resize_to=(1024, 1024))
                 images.append((img_id, name, img.copy(), gray))
             except UnidentifiedImageError:
                 st.warning(f'File {name} is not a recognized image.')
@@ -88,39 +84,11 @@ def render_library_page():
             with cols[2]:
                 st.image(gray, caption=f"Grayscale — {name}", width='stretch')
 
-            # Persist files and metadata
+            # Persist only metadata (do not save image files)
             try:
-                ext = Path(name).suffix.lower() or '.png'
-                orig_filename = f"{img_id}_orig{ext}"
-                gray_filename = f"{img_id}_gray.png"
-                orig_path = uploads_dir / orig_filename
-                gray_path = uploads_dir / gray_filename
-
-                # save original
-                try:
-                    img.save(orig_path)
-                except Exception:
-                    buf = io.BytesIO()
-                    img.save(buf, format='PNG')
-                    buf.seek(0)
-                    with orig_path.open('wb') as f:
-                        f.write(buf.read())
-
-                # save grayscale
-                try:
-                    gray.save(gray_path)
-                except Exception:
-                    buf = io.BytesIO()
-                    gray.save(buf, format='PNG')
-                    buf.seek(0)
-                    with gray_path.open('wb') as f:
-                        f.write(buf.read())
-
                 entry = {
                     'id': img_id,
                     'original_name': name,
-                    'original_path': str(orig_path.name),
-                    'gray_path': str(gray_path.name),
                     'timestamp': datetime.utcnow().isoformat() + 'Z'
                 }
                 meta.append(entry)
@@ -128,11 +96,9 @@ def render_library_page():
                     with meta_path.open('w', encoding='utf-8') as f:
                         json.dump(meta, f, ensure_ascii=False, indent=2)
                 except Exception:
-                    pass
+                    st.warning('Failed to write meta.json')
             except Exception:
-                st.warning('Failed to save files to disk')
-
-            # Download buttons removed per user request (files are still saved to ./uploads/)
+                st.warning('Failed to update metadata')
 
     if tables:
         st.subheader('Datasets')
