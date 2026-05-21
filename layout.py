@@ -37,13 +37,11 @@ def render_sidebar_brand():
 
 
 def render_dashboard_header(page_name, page_description):
-    st.markdown(
-        f"""
-        <div class='analysis-hero'>
-            <div class='analysis-hero-kicker'>Standalone project</div>
-            <h1 class='analysis-hero-title'>{page_name}</h1>
+    # Remove the boxed H1 header entirely; render only an optional subtitle.
+    if page_description:
+        st.markdown(
+            f"""
             <p class='analysis-hero-subtitle'>{page_description}</p>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+            """,
+            unsafe_allow_html=True
+        )

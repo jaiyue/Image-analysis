@@ -14,6 +14,17 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## System dependencies (macOS)
+
+If you see build or file-watching issues on macOS, install the Xcode command line tools and the `watchdog` package:
+
+```bash
+$ xcode-select --install
+$ pip install watchdog
+```
+
+Note: OpenCV (installed via `opencv-python` in `requirements.txt`) may require a working build toolchain on macOS.
+
 ## Structure
 
 - `app.py` entrypoint

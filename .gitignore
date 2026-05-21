@@ -1,3 +1,5 @@
 venv/
 __pycache__/
 *.pyc
+invoice-dashboard/
+.DS_Store

@@ -3,7 +3,8 @@ import streamlit as st
 from layout import render_dashboard_header, render_sidebar_brand
 from navigation import PAGE_BY_LABEL, render_sidebar_navigation
 from theme import apply_custom_theme, apply_minor_ui_fixes, get_native_theme_is_dark
-
+from library import render_library_page
+from image_processing import upload_and_convert_to_grayscale
 
 st.set_page_config(
     page_title='Image Analysis Studio',
@@ -23,7 +24,7 @@ PAGE_HANDLERS = {
 
 def render_home_page():
     st.subheader('Workspace Overview')
-    st.write('This standalone project contains only the core dashboard shell: a top bar, a sidebar, and a simple content area.')
+    st.write('This project contains the core dashboard shell: a top bar, a sidebar, and a simple content area.')
 
     col1, col2, col3 = st.columns(3)
 
@@ -64,10 +65,7 @@ def render_home_page():
         )
 
 
-def render_library_page():
-    st.subheader('Library')
-    st.write('Use this area for datasets, image collections, or uploaded files.')
-    st.info('This is a placeholder page inside the standalone root project.')
+# `render_library_page` is implemented in `library.py` and imported above.
 
 
 def render_insights_page():

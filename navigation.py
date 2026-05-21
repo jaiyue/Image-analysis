@@ -8,7 +8,7 @@ PAGE_GROUPS = [
             {
                 'name': 'Library',
                 'label': 'Library',
-                'description': 'A place for datasets, files, or image collections.'
+                'description': ''
             },
             {
                 'name': 'Insights',
