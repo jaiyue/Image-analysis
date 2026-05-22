@@ -432,6 +432,7 @@ def render_library_page():
                     'time': now.strftime('%H:%M:%S'),
                     'timestamp': now.isoformat(timespec='seconds')
                 }
+                meta = [m for m in meta if str(m.get('id')) != str(img_id)]
                 meta.append(entry)
                 with meta_path.open('w', encoding='utf-8') as f:
                     json.dump(meta, f, ensure_ascii=False, indent=2)
