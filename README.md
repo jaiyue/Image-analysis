@@ -1,11 +1,12 @@
 # Image Analysis Studio
 
-This is a standalone Streamlit project that contains only the basic dashboard shell:
+A Streamlit app for grayscale image analysis with:
 
-- top bar / page header
-- side bar navigation
-- standalone theme and layout helpers
-- a minimal set of placeholder pages
+- image upload and analysis in `Library`
+- standard reference generation in `Standard`
+- summary table + CSV export in `Insights`
+- detail view per analyzed record (opened from `Insights`)
+- persisted run metadata in `uploads/meta.json`
 
 ## Run
 
@@ -14,20 +15,33 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## System dependencies (macOS)
+## Main pages
 
-If you see build or file-watching issues on macOS, install the Xcode command line tools and the `watchdog` package:
+- `Library`
+- Upload images/CSV.
+- Detect dark regions and compute `c`, `t`, `background`, `ratio`.
+- Save generated images and metadata.
 
-```bash
-$ xcode-select --install
-$ pip install watchdog
-```
+- `Standard`
+- Process `image.jpeg`.
+- Generate `standard_reference.json`.
 
-Note: OpenCV (installed via `opencv-python` in `requirements.txt`) may require a working build toolchain on macOS.
+- `Insights`
+- Show `id`, `c`, `t`, `ratio`, `date`, `time`.
+- Export CSV (without `detail` payload).
+- Open per-row detail page.
+
+- `Clear All` (sidebar)
+- Remove generated files in `uploads/`.
+- Clear app session cache/state.
 
 ## Structure
 
-- `app.py` entrypoint
-- `layout.py` top bar and sidebar brand
-- `navigation.py` sidebar navigation data and logic
-- `theme.py` CSS and UI tuning
+- `app.py`: app entrypoint
+- `library.py`: upload + analysis + metadata write
+- `standard.py`: standard reference generation
+- `insight.py`: insights table + export + detail routing
+- `insight_detail.py`: detail record viewer
+- `navigation.py`: sidebar navigation
+- `layout.py`, `theme.py`: UI shell/theme
+- `uploads/`: generated images and `meta.json`
