@@ -12,6 +12,7 @@ from image_processing import (
 )
 from pathlib import Path
 import json
+import io
 from datetime import datetime
 
 try:
@@ -28,6 +29,48 @@ def render_library_page():
 
     uploads_dir = Path(__file__).parent / 'uploads'
     uploads_dir.mkdir(exist_ok=True)
+    standard_ref_path = Path(__file__).parent / 'standard_reference.json'
+
+    standard_ref_values = []
+    try:
+        if standard_ref_path.exists():
+            with standard_ref_path.open('r', encoding='utf-8') as f:
+                ref_payload = json.load(f)
+            for row in ref_payload.get('values', []):
+                cid = row.get('id')
+                cga = row.get('corrected_gray_avg')
+                if cid is None or cga is None:
+                    continue
+                try:
+                    standard_ref_values.append((int(cid), float(cga)))
+                except (TypeError, ValueError):
+                    continue
+            standard_ref_values.sort(key=lambda x: x[1], reverse=True)
+    except Exception:
+        standard_ref_values = []
+
+    def get_standard_id_range(gray_value):
+        if not standard_ref_values:
+            return '-'
+        try:
+            value = float(gray_value)
+        except (TypeError, ValueError):
+            return '-'
+
+        if value >= standard_ref_values[0][1]:
+            edge_id = standard_ref_values[0][0]
+            return f"{edge_id}~{edge_id}"
+        if value <= standard_ref_values[-1][1]:
+            edge_id = standard_ref_values[-1][0]
+            return f"{edge_id}~{edge_id}"
+
+        for i in range(len(standard_ref_values) - 1):
+            id_hi, val_hi = standard_ref_values[i]
+            id_lo, val_lo = standard_ref_values[i + 1]
+            if val_hi >= value >= val_lo:
+                return f"{id_hi}~{id_lo}"
+        return '-'
+
     meta_path = uploads_dir / 'meta.json'
     try:
         if meta_path.exists():
@@ -38,6 +81,15 @@ def render_library_page():
     except Exception:
         meta = []
 
+    if 'library_id_counter' not in st.session_state:
+        st.session_state['library_id_counter'] = 0
+    if 'library_file_ids' not in st.session_state:
+        st.session_state['library_file_ids'] = {}
+    if 'library_cached_uploads' not in st.session_state:
+        st.session_state['library_cached_uploads'] = []
+    if 'library_cached_signatures' not in st.session_state:
+        st.session_state['library_cached_signatures'] = []
+
     detail_id = st.query_params.get('detail_id')
     if detail_id:
         detail_entry = None
@@ -45,7 +97,13 @@ def render_library_page():
             if str(item.get('id')) == str(detail_id):
                 detail_entry = item
                 break
-        st.subheader(f'Detail - ID {detail_id}')
+        header_cols = st.columns([6, 1])
+        with header_cols[0]:
+            st.subheader(f'Detail - ID {detail_id}')
+        with header_cols[1]:
+            if st.button('Back', key='library_detail_back'):
+                st.query_params.clear()
+                st.rerun()
         if detail_entry is None:
             st.warning('Detail record not found in meta.json.')
             return
@@ -70,22 +128,41 @@ def render_library_page():
     uploaded_files = st.file_uploader(
         'Upload images or CSV files',
         accept_multiple_files=True,
-        type=['png', 'jpg', 'jpeg', 'gif', 'tif', 'tiff', 'csv']
+        type=['png', 'jpg', 'jpeg', 'gif', 'tif', 'tiff', 'csv'],
+        key='library_uploader'
     )
 
-    if 'library_id_counter' not in st.session_state:
-        st.session_state['library_id_counter'] = 0
-    if 'library_file_ids' not in st.session_state:
-        st.session_state['library_file_ids'] = {}
+    if uploaded_files:
+        current_sigs = [f"{f.name}::{getattr(f, 'size', None)}" for f in uploaded_files]
+        if current_sigs != st.session_state['library_cached_signatures']:
+            st.session_state['library_cached_uploads'] = [
+                {
+                    'name': uploaded.name,
+                    'type': uploaded.type,
+                    'size': getattr(uploaded, 'size', None),
+                    'bytes': uploaded.getvalue(),
+                }
+                for uploaded in uploaded_files
+            ]
+            st.session_state['library_cached_signatures'] = current_sigs
 
-    if not uploaded_files:
+    source_files = list(uploaded_files) if uploaded_files else []
+    if (not source_files) and st.session_state['library_cached_uploads']:
+        for item in st.session_state['library_cached_uploads']:
+            bio = io.BytesIO(item['bytes'])
+            bio.name = item['name']
+            bio.type = item['type']
+            bio.size = item['size']
+            source_files.append(bio)
+
+    if not source_files:
         st.info('No files uploaded yet. Use the uploader to add images or CSVs.')
         return
 
     images = []
     tables = []
 
-    for uploaded in uploaded_files:
+    for uploaded in source_files:
         name = uploaded.name
         if name.lower().endswith('.csv') or uploaded.type == 'text/csv':
             try:
@@ -178,7 +255,7 @@ def render_library_page():
             if len(v_regions) >= 2:
                 left_region = v_regions[0]
                 right_region = v_regions[-1]
-                pad_x = 10
+                pad_x = 5
                 x_left = max(0, int(left_region[1]) - pad_x)
                 x_right = min(w_crop, int(right_region[0]) + pad_x)
                 if x_right - x_left >= 2:
@@ -256,13 +333,18 @@ def render_library_page():
                 recrop_overlay = refined_crop.convert('RGB')
                 draw_recrop = ImageDraw.Draw(recrop_overlay)
                 w_ref, h_ref = recrop_overlay.size
+                label_map = {1: 'c', 2: 't'}
                 for idx, row in enumerate(recrop_results, start=1):
                     y0_rr = max(0, int(row['start']))
                     y1_rr = min(h_ref - 1, int(row['end']))
                     x0_rr = 0
                     x1_rr = w_ref - 1
                     draw_recrop.rectangle((x0_rr, y0_rr, x1_rr, y1_rr), outline=(255, 0, 0), width=2)
-                    draw_recrop.text((x0_rr + 4, max(0, y0_rr - 14)), str(idx), fill=(255, 0, 0))
+                    draw_recrop.text(
+                        (x0_rr + 4, max(0, y0_rr - 14)),
+                        label_map.get(idx, f"line_{idx}"),
+                        fill=(255, 0, 0)
+                    )
 
                 with cols[1]:
                     st.image(
@@ -271,11 +353,50 @@ def render_library_page():
                         width='stretch'
                     )
                 with cols[2]:
-                    mean_only_df = pd.DataFrame({
-                        'No.': list(range(1, len(recrop_results) + 1)),
-                        'gray_mean': [float(r.get('line_mean', 0.0)) for r in recrop_results]
-                    })
-                    st.dataframe(mean_only_df, width='stretch')
+                    name_map = {1: 'c', 2: 't'}
+                    table_rows = [{
+                        'name': name_map.get(i, f"line_{i}"),
+                        'gray_mean': float(r.get('line_mean', 0.0))
+                    } for i, r in enumerate(recrop_results, start=1)]
+
+                    if len(recrop_results) >= 2:
+                        sorted_rows = sorted(
+                            recrop_results,
+                            key=lambda r: int(r.get('start', 0))
+                        )
+                        upper_end = int(sorted_rows[0].get('end', 0))
+                        lower_start = int(sorted_rows[1].get('start', 0))
+                        bg_y0 = max(0, upper_end + 1)
+                        bg_y1 = min(h_ref, lower_start)
+                        if bg_y1 > bg_y0:
+                            refined_np = np.array(refined_crop)
+                            if refined_np.ndim == 3:
+                                refined_np = np.mean(refined_np, axis=2)
+                            bg_region = refined_np[bg_y0:bg_y1, :]
+                            if bg_region.size > 0:
+                                bg_gray_mean = float(np.mean(bg_region))
+                                table_rows.append({
+                                    'name': 'background',
+                                    'gray_mean': bg_gray_mean
+                                })
+
+                    c_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'c'), None)
+                    t_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 't'), None)
+                    bg_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'background'), None)
+                    if c_val is not None and t_val is not None and bg_val is not None:
+                        denom = c_val - bg_val
+                        if abs(denom) > 1e-12:
+                            ratio_val = (t_val - bg_val) / denom
+                            table_rows.append({
+                                'name': 'ratio',
+                                'gray_mean': float(ratio_val)
+                            })
+
+                    mean_only_df = pd.DataFrame(table_rows)[['name', 'gray_mean']]
+                    mean_only_df['standard_id_range'] = mean_only_df['gray_mean'].apply(
+                        get_standard_id_range
+                    )
+                    st.dataframe(mean_only_df[['name', 'gray_mean']], width='stretch')
             else:
                 with cols[1]:
                     st.info(f"No dark line regions detected: {name}")

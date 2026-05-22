@@ -578,15 +578,10 @@ def render_standard_page():
     )
 
     # Save JSON
-    uploads_dir = (
-        Path(__file__).parent /
-        'uploads'
-    )
 
-    uploads_dir.mkdir(exist_ok=True)
 
     standard_path = (
-        uploads_dir /
+        Path(__file__).parent /
         'standard_reference.json'
     )
 
