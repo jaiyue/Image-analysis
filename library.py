@@ -12,7 +12,6 @@ from image_processing import (
 )
 from pathlib import Path
 import json
-import io
 from datetime import datetime
 
 try:
@@ -29,48 +28,6 @@ def render_library_page():
 
     uploads_dir = Path(__file__).parent / 'uploads'
     uploads_dir.mkdir(exist_ok=True)
-    standard_ref_path = Path(__file__).parent / 'standard_reference.json'
-
-    standard_ref_values = []
-    try:
-        if standard_ref_path.exists():
-            with standard_ref_path.open('r', encoding='utf-8') as f:
-                ref_payload = json.load(f)
-            for row in ref_payload.get('values', []):
-                cid = row.get('id')
-                cga = row.get('corrected_gray_avg')
-                if cid is None or cga is None:
-                    continue
-                try:
-                    standard_ref_values.append((int(cid), float(cga)))
-                except (TypeError, ValueError):
-                    continue
-            standard_ref_values.sort(key=lambda x: x[1], reverse=True)
-    except Exception:
-        standard_ref_values = []
-
-    def get_standard_id_range(gray_value):
-        if not standard_ref_values:
-            return '-'
-        try:
-            value = float(gray_value)
-        except (TypeError, ValueError):
-            return '-'
-
-        if value >= standard_ref_values[0][1]:
-            edge_id = standard_ref_values[0][0]
-            return f"{edge_id}~{edge_id}"
-        if value <= standard_ref_values[-1][1]:
-            edge_id = standard_ref_values[-1][0]
-            return f"{edge_id}~{edge_id}"
-
-        for i in range(len(standard_ref_values) - 1):
-            id_hi, val_hi = standard_ref_values[i]
-            id_lo, val_lo = standard_ref_values[i + 1]
-            if val_hi >= value >= val_lo:
-                return f"{id_hi}~{id_lo}"
-        return '-'
-
     meta_path = uploads_dir / 'meta.json'
     try:
         if meta_path.exists():
@@ -81,15 +38,6 @@ def render_library_page():
     except Exception:
         meta = []
 
-    if 'library_id_counter' not in st.session_state:
-        st.session_state['library_id_counter'] = 0
-    if 'library_file_ids' not in st.session_state:
-        st.session_state['library_file_ids'] = {}
-    if 'library_cached_uploads' not in st.session_state:
-        st.session_state['library_cached_uploads'] = []
-    if 'library_cached_signatures' not in st.session_state:
-        st.session_state['library_cached_signatures'] = []
-
     detail_id = st.query_params.get('detail_id')
     if detail_id:
         detail_entry = None
@@ -97,13 +45,7 @@ def render_library_page():
             if str(item.get('id')) == str(detail_id):
                 detail_entry = item
                 break
-        header_cols = st.columns([6, 1])
-        with header_cols[0]:
-            st.subheader(f'Detail - ID {detail_id}')
-        with header_cols[1]:
-            if st.button('Back', key='library_detail_back'):
-                st.query_params.clear()
-                st.rerun()
+        st.subheader(f'Detail - ID {detail_id}')
         if detail_entry is None:
             st.warning('Detail record not found in meta.json.')
             return
@@ -112,15 +54,18 @@ def render_library_page():
         with dcols[0]:
             orig_path = detail_entry.get('original_path', '')
             if orig_path and Path(orig_path).exists():
-                st.image(Image.open(orig_path), caption='Original', width='stretch')
+                st.image(Image.open(orig_path),
+                         caption='Original', width='stretch')
         with dcols[1]:
             gray_path = detail_entry.get('gray_path', '')
             if gray_path and Path(gray_path).exists():
-                st.image(Image.open(gray_path), caption='Grayscale', width='stretch')
+                st.image(Image.open(gray_path),
+                         caption='Grayscale', width='stretch')
         with dcols[2]:
             dark_path = detail_entry.get('dark_regions_path', '')
             if dark_path and Path(dark_path).exists():
-                st.image(Image.open(dark_path), caption='Dark Line Regions', width='stretch')
+                st.image(Image.open(dark_path),
+                         caption='Dark Line Regions', width='stretch')
             else:
                 st.info('No Dark Line Regions image found.')
         return
@@ -128,41 +73,22 @@ def render_library_page():
     uploaded_files = st.file_uploader(
         'Upload images or CSV files',
         accept_multiple_files=True,
-        type=['png', 'jpg', 'jpeg', 'gif', 'tif', 'tiff', 'csv'],
-        key='library_uploader'
+        type=['png', 'jpg', 'jpeg', 'gif', 'tif', 'tiff', 'csv']
     )
 
-    if uploaded_files:
-        current_sigs = [f"{f.name}::{getattr(f, 'size', None)}" for f in uploaded_files]
-        if current_sigs != st.session_state['library_cached_signatures']:
-            st.session_state['library_cached_uploads'] = [
-                {
-                    'name': uploaded.name,
-                    'type': uploaded.type,
-                    'size': getattr(uploaded, 'size', None),
-                    'bytes': uploaded.getvalue(),
-                }
-                for uploaded in uploaded_files
-            ]
-            st.session_state['library_cached_signatures'] = current_sigs
+    if 'library_id_counter' not in st.session_state:
+        st.session_state['library_id_counter'] = 0
+    if 'library_file_ids' not in st.session_state:
+        st.session_state['library_file_ids'] = {}
 
-    source_files = list(uploaded_files) if uploaded_files else []
-    if (not source_files) and st.session_state['library_cached_uploads']:
-        for item in st.session_state['library_cached_uploads']:
-            bio = io.BytesIO(item['bytes'])
-            bio.name = item['name']
-            bio.type = item['type']
-            bio.size = item['size']
-            source_files.append(bio)
-
-    if not source_files:
+    if not uploaded_files:
         st.info('No files uploaded yet. Use the uploader to add images or CSVs.')
         return
 
     images = []
     tables = []
 
-    for uploaded in source_files:
+    for uploaded in uploaded_files:
         name = uploaded.name
         if name.lower().endswith('.csv') or uploaded.type == 'text/csv':
             try:
@@ -180,7 +106,8 @@ def render_library_page():
                 file_sig = f"{name}::{file_size}"
                 if file_sig not in st.session_state['library_file_ids']:
                     st.session_state['library_id_counter'] += 1
-                    st.session_state['library_file_ids'][file_sig] = f"{st.session_state['library_id_counter']:05d}"
+                    st.session_state['library_file_ids'][
+                        file_sig] = f"{st.session_state['library_id_counter']:05d}"
                 img_id = st.session_state['library_file_ids'][file_sig]
 
                 # Original grayscale (no enhancement)
@@ -204,7 +131,8 @@ def render_library_page():
             cols = st.columns([1, 2, 4])
             with cols[0]:
                 st.markdown(f"**ID**\n\n`{img_id}`")
-                st.link_button('Detail', f'?detail_id={img_id}', use_container_width=True)
+                st.link_button(
+                    'Detail', f'?detail_id={img_id}', use_container_width=True)
 
             # Hard crop: fixed 0.3 x 0.3 centered region
             w_gray, h_gray = gray.size
@@ -248,18 +176,20 @@ def render_library_page():
             for xs, xe in v_regions:
                 x0 = max(0, int(xs))
                 x1 = min(w_crop - 1, int(xe))
-                draw_v.rectangle((x0, 0, x1, h_crop - 1), outline=(0, 255, 255), width=2)
+                draw_v.rectangle((x0, 0, x1, h_crop - 1),
+                                 outline=(0, 255, 255), width=2)
 
             # Re-crop by two full-height vertical dark lines: keep only middle area
             cropped_between = None
             if len(v_regions) >= 2:
                 left_region = v_regions[0]
                 right_region = v_regions[-1]
-                pad_x = 5
+                pad_x = 3
                 x_left = max(0, int(left_region[1]) - pad_x)
                 x_right = min(w_crop, int(right_region[0]) + pad_x)
                 if x_right - x_left >= 2:
-                    cropped_between = cropped.crop((x_left, 0, x_right, h_crop))
+                    cropped_between = cropped.crop(
+                        (x_left, 0, x_right, h_crop))
 
             # post_cols = st.columns(2)
             # with post_cols[0]:
@@ -282,7 +212,8 @@ def render_library_page():
 
             # Dark-line detection on cropped image
             profile = build_intensity_profile(analysis_img)
-            regions = detect_line_regions(profile, threshold_scale=0.85, min_region_height=2)
+            regions = detect_line_regions(
+                profile, threshold_scale=0.85, min_region_height=2)
             darkness_results = measure_line_darkness(analysis_img, regions)
 
             if regions:
@@ -295,7 +226,8 @@ def render_library_page():
                     y1_r = min(h_crop - 1, int(row['end']))
                     x0_r = max(0, int(row.get('x_start', 0)))
                     x1_r = min(w_crop - 1, int(row.get('x_end', w_crop)))
-                    draw.rectangle((x0_r, y0_r, x1_r, y1_r), outline=(255, 0, 0), width=2)
+                    draw.rectangle((x0_r, y0_r, x1_r, y1_r),
+                                   outline=(255, 0, 0), width=2)
 
                 # Crop again around center-most detected dark-line regions with padding
                 pad = 20
@@ -328,7 +260,8 @@ def render_library_page():
                 recrop_regions = detect_line_regions(
                     recrop_profile, threshold_scale=0.85, min_region_height=2
                 )
-                recrop_results = measure_line_darkness(refined_crop, recrop_regions)
+                recrop_results = measure_line_darkness(
+                    refined_crop, recrop_regions)
 
                 recrop_overlay = refined_crop.convert('RGB')
                 draw_recrop = ImageDraw.Draw(recrop_overlay)
@@ -339,7 +272,8 @@ def render_library_page():
                     y1_rr = min(h_ref - 1, int(row['end']))
                     x0_rr = 0
                     x1_rr = w_ref - 1
-                    draw_recrop.rectangle((x0_rr, y0_rr, x1_rr, y1_rr), outline=(255, 0, 0), width=2)
+                    draw_recrop.rectangle(
+                        (x0_rr, y0_rr, x1_rr, y1_rr), outline=(255, 0, 0), width=2)
                     draw_recrop.text(
                         (x0_rr + 4, max(0, y0_rr - 14)),
                         label_map.get(idx, f"line_{idx}"),
@@ -380,23 +314,11 @@ def render_library_page():
                                     'gray_mean': bg_gray_mean
                                 })
 
-                    c_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'c'), None)
-                    t_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 't'), None)
-                    bg_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'background'), None)
-                    if c_val is not None and t_val is not None and bg_val is not None:
-                        denom = c_val - bg_val
-                        if abs(denom) > 1e-12:
-                            ratio_val = (t_val - bg_val) / denom
-                            table_rows.append({
-                                'name': 'ratio',
-                                'gray_mean': float(ratio_val)
-                            })
-
-                    mean_only_df = pd.DataFrame(table_rows)[['name', 'gray_mean']]
-                    mean_only_df['standard_id_range'] = mean_only_df['gray_mean'].apply(
-                        get_standard_id_range
-                    )
-                    st.dataframe(mean_only_df[['name', 'gray_mean']], width='stretch')
+                    mean_only_df = pd.DataFrame(table_rows)[[
+                        'name': [name_map.get(i, f"line_{i}") for i in range(1, len(recrop_results) + 1)],
+                        'gray_mean'
+                    ]]
+                    st.dataframe(mean_only_df, width='stretch')
             else:
                 with cols[1]:
                     st.info(f"No dark line regions detected: {name}")
@@ -432,7 +354,6 @@ def render_library_page():
                     'time': now.strftime('%H:%M:%S'),
                     'timestamp': now.isoformat(timespec='seconds')
                 }
-                meta = [m for m in meta if str(m.get('id')) != str(img_id)]
                 meta.append(entry)
                 with meta_path.open('w', encoding='utf-8') as f:
                     json.dump(meta, f, ensure_ascii=False, indent=2)
