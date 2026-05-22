@@ -21,6 +21,18 @@ except Exception:
     UnidentifiedImageError = Exception
 
 
+def _extract_image_datetime(pil_img):
+    try:
+        exif = pil_img.getexif()
+        for tag in (36867, 36868, 306):  # DateTimeOriginal, DateTimeDigitized, DateTime
+            raw = exif.get(tag)
+            if raw:
+                return datetime.strptime(str(raw), '%Y:%m:%d %H:%M:%S')
+    except Exception:
+        return None
+    return None
+
+
 def render_library_page():
     st.title('Library')
     st.write(
@@ -37,38 +49,6 @@ def render_library_page():
             meta = []
     except Exception:
         meta = []
-
-    detail_id = st.query_params.get('detail_id')
-    if detail_id:
-        detail_entry = None
-        for item in reversed(meta):
-            if str(item.get('id')) == str(detail_id):
-                detail_entry = item
-                break
-        st.subheader(f'Detail - ID {detail_id}')
-        if detail_entry is None:
-            st.warning('Detail record not found in meta.json.')
-            return
-        st.write(f"Original file: {detail_entry.get('original_name', '-')}")
-        dcols = st.columns(3)
-        with dcols[0]:
-            orig_path = detail_entry.get('original_path', '')
-            if orig_path and Path(orig_path).exists():
-                st.image(Image.open(orig_path),
-                         caption='Original', width='stretch')
-        with dcols[1]:
-            gray_path = detail_entry.get('gray_path', '')
-            if gray_path and Path(gray_path).exists():
-                st.image(Image.open(gray_path),
-                         caption='Grayscale', width='stretch')
-        with dcols[2]:
-            dark_path = detail_entry.get('dark_regions_path', '')
-            if dark_path and Path(dark_path).exists():
-                st.image(Image.open(dark_path),
-                         caption='Dark Line Regions', width='stretch')
-            else:
-                st.info('No Dark Line Regions image found.')
-        return
 
     uploaded_files = st.file_uploader(
         'Upload images or CSV files',
@@ -101,7 +81,9 @@ def render_library_page():
                 st.warning('Pillow is not available: cannot display images.')
                 break
             try:
-                img = Image.open(uploaded).convert('RGB')
+                src_img = Image.open(uploaded)
+                image_dt = _extract_image_datetime(src_img)
+                img = src_img.convert('RGB')
                 file_size = getattr(uploaded, 'size', None)
                 file_sig = f"{name}::{file_size}"
                 if file_sig not in st.session_state['library_file_ids']:
@@ -118,7 +100,7 @@ def render_library_page():
                 black_white = build_black_white_image(enhanced)
 
                 images.append((img_id, name, img.copy(),
-                              gray, enhanced, black_white))
+                              gray, enhanced, black_white, image_dt))
             except UnidentifiedImageError:
                 st.warning(f'File {name} is not a recognized image.')
             except Exception as e:
@@ -126,13 +108,15 @@ def render_library_page():
 
     if images:
         st.subheader('Images')
-        for img_id, name, img, gray, enhanced, black_white in images:
+        for img_id, name, img, gray, enhanced, black_white, image_dt in images:
             cropped_overlay = None
+            recrop_overlay = None
+            c_val = None
+            t_val = None
+            ratio_val = None
             cols = st.columns([1, 2, 4])
             with cols[0]:
                 st.markdown(f"**ID**\n\n`{img_id}`")
-                st.link_button(
-                    'Detail', f'?detail_id={img_id}', use_container_width=True)
 
             # Hard crop: fixed 0.3 x 0.3 centered region
             w_gray, h_gray = gray.size
@@ -314,10 +298,19 @@ def render_library_page():
                                     'gray_mean': bg_gray_mean
                                 })
 
-                    mean_only_df = pd.DataFrame(table_rows)[[
-                        'name': [name_map.get(i, f"line_{i}") for i in range(1, len(recrop_results) + 1)],
-                        'gray_mean'
-                    ]]
+                    c_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'c'), None)
+                    t_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 't'), None)
+                    bg_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'background'), None)
+                    if c_val is not None and t_val is not None and bg_val is not None:
+                        denom = c_val - bg_val
+                        if abs(denom) > 1e-12:
+                            ratio_val = float((t_val - bg_val) / denom)
+                            table_rows.append({
+                                'name': 'ratio',
+                                'gray_mean': ratio_val
+                            })
+
+                    mean_only_df = pd.DataFrame(table_rows)[['name', 'gray_mean']]
                     st.dataframe(mean_only_df, width='stretch')
             else:
                 with cols[1]:
@@ -331,17 +324,35 @@ def render_library_page():
                 gray_filename = f'{img_id}_gray.png'
                 cropped_filename = f'{img_id}_cropped.png'
                 dark_filename = f'{img_id}_dark_regions.png'
+                recrop_filename = f'{img_id}_recrop.png'
                 original_path = uploads_dir / original_filename
                 gray_path = uploads_dir / gray_filename
                 cropped_path = uploads_dir / cropped_filename
                 dark_path = uploads_dir / dark_filename
+                recrop_path = uploads_dir / recrop_filename
                 img.save(original_path)
                 gray.save(gray_path)
                 cropped.save(cropped_path)
                 if cropped_overlay is not None:
                     cropped_overlay.save(dark_path)
+                if recrop_overlay is not None:
+                    recrop_overlay.save(recrop_path)
 
-                now = datetime.now()
+                now = image_dt or datetime.now()
+                detail_payload = {
+                    'images': {
+                        'original_path': str(original_path),
+                        'gray_path': str(gray_path),
+                        'cropped_path': str(cropped_path),
+                        'dark_regions_path': str(dark_path) if cropped_overlay is not None else '',
+                        'recrop_path': str(recrop_path) if recrop_path.exists() else '',
+                    },
+                    'metrics': {
+                        'c': round(float(c_val), 4) if c_val is not None else None,
+                        't': round(float(t_val), 4) if t_val is not None else None,
+                        'ratio': round(float(ratio_val), 6) if ratio_val is not None else None,
+                    }
+                }
                 entry = {
                     'id': img_id,
                     'original_name': name,
@@ -350,10 +361,15 @@ def render_library_page():
                     'cropped_name': cropped_filename,
                     'cropped_path': str(cropped_path),
                     'dark_regions_path': str(dark_path) if cropped_overlay is not None else '',
+                    'c': round(float(c_val), 4) if c_val is not None else None,
+                    't': round(float(t_val), 4) if t_val is not None else None,
+                    'ratio': round(float(ratio_val), 6) if ratio_val is not None else None,
+                    'detail': detail_payload,
                     'date': now.strftime('%Y-%m-%d'),
                     'time': now.strftime('%H:%M:%S'),
                     'timestamp': now.isoformat(timespec='seconds')
                 }
+                meta = [m for m in meta if str(m.get('id')) != str(img_id)]
                 meta.append(entry)
                 with meta_path.open('w', encoding='utf-8') as f:
                     json.dump(meta, f, ensure_ascii=False, indent=2)

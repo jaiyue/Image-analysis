@@ -1,10 +1,12 @@
 import streamlit as st
+from pathlib import Path
 
 from layout import render_dashboard_header, render_sidebar_brand
 from navigation import PAGE_BY_LABEL, render_sidebar_navigation
 from theme import apply_custom_theme, apply_minor_ui_fixes, get_native_theme_is_dark
 from library import render_library_page
 from standard import render_standard_page
+from insight import render_insights_page
 from image_processing import upload_and_convert_to_grayscale
 
 st.set_page_config(
@@ -22,6 +24,26 @@ PAGE_HANDLERS = {
     'Insights': lambda: render_insights_page(),
     'Settings': lambda: render_settings_page(),
 }
+
+
+def clear_all_content():
+    project_root = Path(__file__).parent
+    uploads_dir = project_root / 'uploads'
+
+    if uploads_dir.exists():
+        for p in uploads_dir.iterdir():
+            if p.is_file():
+                p.unlink(missing_ok=True)
+
+    for ref_name in ('standard_reference.json', 'standard_ref.json'):
+        ref_path = project_root / ref_name
+        if ref_path.exists():
+            ref_path.unlink(missing_ok=True)
+
+    preserved_selected = st.session_state.get('selected_page_label', 'Library')
+    st.session_state.clear()
+    st.session_state['selected_page_label'] = preserved_selected
+    st.session_state['selected_page_label_radio'] = preserved_selected
 
 
 def render_home_page():
@@ -70,12 +92,6 @@ def render_home_page():
 # `render_library_page` is implemented in `library.py` and imported above.
 
 
-def render_insights_page():
-    st.subheader('Insights')
-    st.write('Use this area for charts, model outputs, or visual review summaries.')
-    st.info('Replace this page with your own image-analysis logic when ready.')
-
-
 def render_settings_page():
     st.subheader('Settings')
     st.write(
@@ -89,6 +105,13 @@ def main():
     render_sidebar_brand()
 
     selected_page_label = render_sidebar_navigation()
+    st.sidebar.divider()
+    if st.sidebar.button('Clear All', key='clear_all_content', width='stretch'):
+        clear_all_content()
+        st.session_state.selected_page_label = 'Library'
+        st.session_state.selected_page_label_radio = 'Library'
+        st.rerun()
+
     page_definition = PAGE_BY_LABEL[selected_page_label]
 
     render_dashboard_header(
