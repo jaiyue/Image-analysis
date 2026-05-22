@@ -4,6 +4,7 @@ from layout import render_dashboard_header, render_sidebar_brand
 from navigation import PAGE_BY_LABEL, render_sidebar_navigation
 from theme import apply_custom_theme, apply_minor_ui_fixes, get_native_theme_is_dark
 from library import render_library_page
+from standard import render_standard_page
 from image_processing import upload_and_convert_to_grayscale
 
 st.set_page_config(
@@ -17,6 +18,7 @@ st.set_page_config(
 PAGE_HANDLERS = {
     'Home': lambda: render_home_page(),
     'Library': lambda: render_library_page(),
+    'Standard': lambda: render_standard_page(),
     'Insights': lambda: render_insights_page(),
     'Settings': lambda: render_settings_page(),
 }
