@@ -40,6 +40,7 @@ def render_insight_detail_page(detail_id):
     detail = detail_entry.get('detail', {})
     images = detail.get('images', {})
     metrics = detail.get('metrics', {})
+    vertical_crop_reason = detail.get('vertical_crop_reason', '')
     if not metrics:
         metrics = {
             'c': detail_entry.get('c'),
@@ -56,17 +57,34 @@ def render_insight_detail_page(detail_id):
     show_paths = [
         ('Original', images.get('original_path', detail_entry.get('original_path', ''))),
         ('Grayscale', images.get('gray_path', detail_entry.get('gray_path', ''))),
-        ('Cropped', images.get('cropped_path', detail_entry.get('cropped_path', ''))),
+        ('Vertical Crop (Length Limited)', images.get('vertical_crop_path', '')),
+        ('Cropped', images.get('cropped_vertical_path', images.get('cropped_path', detail_entry.get('cropped_path', '')))),
+        ('Cropped (Top/Bottom 15% Removed)', images.get('cropped_trimmed_path', '')),
         ('Re-Crop Overlay', images.get('recrop_path', '')),
     ]
     cols = st.columns(3)
     col_idx = 0
     for caption, img_path in show_paths:
         if not img_path:
+            if caption == 'Vertical Crop (Length Limited)':
+                reason_map = {
+                    'only_one_vertical_line': 'Vertical crop not generated: only one vertical line detected.',
+                    'no_vertical_lines': 'Vertical crop not generated: no vertical lines detected.',
+                    'width_insufficient': 'Vertical crop not generated: width between two lines is insufficient.',
+                    'single_line_width_insufficient': 'Vertical crop not generated: single detected line width is insufficient.',
+                }
+                if vertical_crop_reason in reason_map:
+                    st.info(reason_map[vertical_crop_reason])
             continue
         p = Path(img_path)
         if not p.exists():
             continue
         with cols[col_idx % 3]:
-            st.image(Image.open(p), caption=caption, width='stretch')
+            img = Image.open(p)
+            if caption == 'Vertical Crop (Length Limited)':
+                max_h = 260
+                if img.height > max_h:
+                    new_w = max(1, int(round(img.width * (max_h / float(img.height)))))
+                    img = img.resize((new_w, max_h))
+            st.image(img, caption=caption, width='stretch')
         col_idx += 1
