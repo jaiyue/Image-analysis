@@ -7,6 +7,7 @@ from theme import apply_custom_theme, apply_minor_ui_fixes, get_native_theme_is_
 from library import render_library_page
 from standard import render_standard_page
 from insight import render_insights_page
+from human_review import render_human_review_page
 from image_processing import upload_and_convert_to_grayscale
 
 st.set_page_config(
@@ -22,6 +23,7 @@ PAGE_HANDLERS = {
     'Library': lambda: render_library_page(),
     'Standard': lambda: render_standard_page(),
     'Insights': lambda: render_insights_page(),
+    'Review': lambda: render_human_review_page(),
     'Settings': lambda: render_settings_page(),
 }
 
@@ -39,6 +41,11 @@ def clear_all_content():
         ref_path = project_root / ref_name
         if ref_path.exists():
             ref_path.unlink(missing_ok=True)
+
+    for db_name in ('uploads.db', 'human_review.db'):
+        db_path = project_root / db_name
+        if db_path.exists():
+            db_path.unlink(missing_ok=True)
 
     preserved_selected = st.session_state.get('selected_page_label', 'Library')
     st.session_state.clear()

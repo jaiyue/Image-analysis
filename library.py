@@ -9,8 +9,8 @@ from image_processing import (
     analyze_library_image,
 )
 from pathlib import Path
-import json
 from datetime import datetime
+from uploads_db import init_uploads_db, upsert_upload_record
 
 try:
     from PIL import Image, ImageOps, UnidentifiedImageError
@@ -38,15 +38,7 @@ def render_library_page():
 
     uploads_dir = Path(__file__).parent / 'uploads'
     uploads_dir.mkdir(exist_ok=True)
-    meta_path = uploads_dir / 'meta.json'
-    try:
-        if meta_path.exists():
-            with meta_path.open('r', encoding='utf-8') as f:
-                meta = json.load(f)
-        else:
-            meta = []
-    except Exception:
-        meta = []
+    init_uploads_db()
 
     uploaded_files = st.file_uploader(
         'Upload images or CSV files',
@@ -211,12 +203,9 @@ def render_library_page():
                     'time': now.strftime('%H:%M:%S'),
                     'timestamp': now.isoformat(timespec='seconds')
                 }
-                meta = [m for m in meta if str(m.get('id')) != str(img_id)]
-                meta.append(entry)
-                with meta_path.open('w', encoding='utf-8') as f:
-                    json.dump(meta, f, ensure_ascii=False, indent=2)
+                upsert_upload_record(entry)
             except Exception:
-                st.warning('Failed to save cropped image or write meta.json')
+                st.warning('Failed to save cropped image or write to uploads.db')
 
     if tables:
         st.subheader('Datasets')

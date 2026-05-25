@@ -19,6 +19,11 @@ PAGE_GROUPS = [
                 'name': 'Insights',
                 'label': 'Insights',
                 'description': 'A place for charts, summaries, and model outputs.'
+            },
+            {
+                'name': 'Review',
+                'label': 'Review',
+                'description': 'Manual review page with side-by-side image checks and visual score inputs.'
             }
         ]
     },

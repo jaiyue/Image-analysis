@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
-import json
-from pathlib import Path
 from insight_detail import render_insight_detail_page
+from uploads_db import init_uploads_db, list_insight_rows
 
 
 def render_insights_page():
@@ -12,23 +11,11 @@ def render_insights_page():
         return
 
     st.subheader('Insights')
-    uploads_dir = Path(__file__).parent / 'uploads'
-    meta_path = uploads_dir / 'meta.json'
+    init_uploads_db()
 
     rows = []
     try:
-        if meta_path.exists():
-            with meta_path.open('r', encoding='utf-8') as f:
-                meta = json.load(f)
-            for item in meta:
-                rows.append({
-                    'id': item.get('id'),
-                    'c': item.get('c'),
-                    't': item.get('t'),
-                    'ratio': item.get('ratio'),
-                    'date': item.get('date'),
-                    'time': item.get('time'),
-                })
+        rows = list_insight_rows()
     except Exception:
         rows = []
 

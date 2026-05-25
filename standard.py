@@ -402,12 +402,12 @@ def render_standard_page():
     st.title('Standard')
 
     st.write(
-        'Use `image.jpeg` as the standard rule image.'
+        'Use `image.png` as the standard rule image.'
     )
 
     image_path = (
         Path(__file__).parent /
-        'image.jpeg'
+        'image.png'
     )
 
     if not image_path.exists():

@@ -1,22 +1,8 @@
-import json
 from pathlib import Path
 
 import streamlit as st
 from PIL import Image
-
-
-def _load_meta():
-    meta_path = Path(__file__).parent / 'uploads' / 'meta.json'
-    if not meta_path.exists():
-        return []
-    try:
-        with meta_path.open('r', encoding='utf-8') as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-    except Exception:
-        return []
-    return []
+from uploads_db import get_upload_detail_by_id, init_uploads_db
 
 
 def render_insight_detail_page(detail_id):
@@ -25,10 +11,10 @@ def render_insight_detail_page(detail_id):
         st.query_params.clear()
         st.rerun()
 
-    meta = _load_meta()
-    detail_entry = next((m for m in reversed(meta) if str(m.get('id')) == str(detail_id)), None)
+    init_uploads_db()
+    detail_entry = get_upload_detail_by_id(detail_id)
     if detail_entry is None:
-        st.warning('Detail record not found in meta.json.')
+        st.warning('Detail record not found in uploads.db.')
         return
 
     st.write(f"Original file: {detail_entry.get('original_name', '-')}")
