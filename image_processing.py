@@ -602,9 +602,21 @@ def analyze_library_image(gray_pil):
         "table_rows": [],
         "c": None,
         "t": None,
+        "bg": None,
         "ratio": None,
+        "ct_bg_sum": None,
         "vertical_crop_reason": "no_vertical_lines",
     }
+
+    def _to_dark_value(v):
+        if v is None:
+            return None
+        return float(255.0 - float(v))
+
+    def _r4(v):
+        if v is None:
+            return None
+        return round(float(v), 4)
 
     w_gray, h_gray = gray_pil.size
     crop_w = max(1, int(w_gray * 0.25))
@@ -751,7 +763,7 @@ def analyze_library_image(gray_pil):
     name_map = {1: 'c', 2: 't'}
     table_rows = [{
         'name': name_map.get(i, f"line_{i}"),
-        'gray_mean': float(r.get('line_mean', 0.0))
+        'gray_mean': _r4(_to_dark_value(r.get('line_mean', 0.0)))
     } for i, r in enumerate(recrop_results, start=1)]
     if len(recrop_results) >= 2:
         sorted_rows = sorted(recrop_results, key=lambda r: int(r.get('start', 0)))
@@ -765,22 +777,31 @@ def analyze_library_image(gray_pil):
                 refined_np = np.mean(refined_np, axis=2)
             bg_region = refined_np[bg_y0:bg_y1, :]
             if bg_region.size > 0:
-                table_rows.append({'name': 'background', 'gray_mean': float(np.mean(bg_region))})
+                table_rows.append({'name': 'background', 'gray_mean': _r4(_to_dark_value(float(np.mean(bg_region))))})
 
     c_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'c'), None)
     t_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 't'), None)
     bg_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'background'), None)
     ratio_val = None
+    ct_bg_sum_val = None
     if c_val is not None and t_val is not None and bg_val is not None:
         denom = c_val - bg_val
         if abs(denom) > 1e-12:
-            ratio_val = float((t_val - bg_val) / denom)
+            ratio_val = _r4(float((t_val - bg_val) / denom))
             table_rows.append({'name': 'ratio', 'gray_mean': ratio_val})
+        ct_bg_sum_val = _r4(float((c_val - bg_val) + (t_val - bg_val)))
+        table_rows.append({'name': '(c-bg)+(t-bg)', 'gray_mean': ct_bg_sum_val})
+
+    c_val = _r4(c_val)
+    t_val = _r4(t_val)
+    bg_val = _r4(bg_val)
 
     result["table_rows"] = table_rows
     result["c"] = c_val
     result["t"] = t_val
+    result["bg"] = bg_val
     result["ratio"] = ratio_val
+    result["ct_bg_sum"] = ct_bg_sum_val
     return result
 
 

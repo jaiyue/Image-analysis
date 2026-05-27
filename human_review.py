@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).parent
 REFERENCE_IMAGE_PATH = PROJECT_ROOT / 'image.png'
 UPLOADS_DIR = PROJECT_ROOT / 'uploads'
 REVIEW_DB_PATH = PROJECT_ROOT / 'human_review.db'
+UPLOADS_DB_PATH = PROJECT_ROOT / 'uploads.db'
 
 
 def _pick_random_original_image():
@@ -104,16 +105,89 @@ def _load_history_rows():
         rows = conn.execute(
             """
             SELECT
+                r.id AS review_id,
                 r.image_id AS image_id,
                 ROUND(AVG(s.c), 2) AS c_avg,
-                ROUND(AVG(s.t), 2) AS t_avg
+                ROUND(AVG(s.t), 2) AS t_avg,
+                AVG(CASE WHEN s.c != 0 THEN s.t / s.c END) AS manual_t_c_ratio_avg
             FROM reviews r
             JOIN review_scores s ON s.review_id = r.id
             GROUP BY r.id
             ORDER BY r.id DESC
             """
         ).fetchall()
-        return [dict(row) for row in rows]
+        history = []
+        for row in rows:
+            row_data = dict(row)
+            image_id = row_data.get('image_id')
+            system_ratio = _load_system_ratio_by_image_id(image_id)
+            manual_ratio = row_data.get('manual_t_c_ratio_avg')
+            if manual_ratio is not None:
+                manual_ratio = float(manual_ratio)
+            diff = None
+            if manual_ratio is not None and system_ratio is not None:
+                diff = manual_ratio - system_ratio
+            history.append({
+                'star': '⭐' if _load_starred_by_image_id(image_id) else '☆',
+                'image_id': image_id,
+                'c_avg': row_data.get('c_avg'),
+                't_avg': row_data.get('t_avg'),
+                'System ratio': None if system_ratio is None else round(system_ratio, 6),
+                'Manual t/c ratio avg': None if manual_ratio is None else round(manual_ratio, 6),
+                'Difference (manual - system)': None if diff is None else round(diff, 6),
+            })
+        return history
+    finally:
+        conn.close()
+
+
+def _load_system_ratio_by_image_id(image_id):
+    if not UPLOADS_DB_PATH.exists():
+        return None
+    conn = sqlite3.connect(UPLOADS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT ratio
+            FROM upload_records
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (str(image_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        value = row['ratio']
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def _load_starred_by_image_id(image_id):
+    if not UPLOADS_DB_PATH.exists():
+        return False
+    conn = sqlite3.connect(UPLOADS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT starred
+            FROM upload_records
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (str(image_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        return bool(row['starred'])
+    except Exception:
+        return False
     finally:
         conn.close()
 
@@ -139,6 +213,8 @@ def render_human_review_page():
     if not random_image_path.exists():
         st.warning(f'Random image not found: {random_image_name}')
         return
+    image_id = _extract_image_id(random_image_path.name)
+    system_ratio = _load_system_ratio_by_image_id(image_id)
 
     images_col, table_col = st.columns([3, 2])
 
@@ -162,15 +238,7 @@ def render_human_review_page():
         st.write('**History**')
         history_rows = _load_history_rows()
         if history_rows:
-            slim_rows = [
-                {
-                    'image_id': row.get('image_id'),
-                    'c_avg': row.get('c_avg'),
-                    't_avg': row.get('t_avg'),
-                }
-                for row in history_rows
-            ]
-            st.dataframe(slim_rows, hide_index=True, width='stretch')
+            st.dataframe(history_rows, hide_index=True, width='stretch')
         else:
             st.info('No review history yet.')
 
@@ -224,13 +292,15 @@ def render_human_review_page():
                 st.error('c/t must be numeric values.')
                 return
 
-            image_id = _extract_image_id(random_image_path.name)
             _insert_review(
                 image_id=image_id,
                 image_name=random_image_path.name,
                 review_rows=review_rows,
             )
             st.success(f'Saved to {REVIEW_DB_PATH.name}')
+
+            manual_ratios = [float(r['t']) / float(r['c']) for r in review_rows if float(r['c']) != 0]
+            manual_ratio_avg = (sum(manual_ratios) / len(manual_ratios)) if manual_ratios else None
 
             st.write(f'Image ID: **{image_id}**')
             st.write(
@@ -239,6 +309,16 @@ def render_human_review_page():
             st.write(
                 f"t min/max/avg: **{min(t_scores):.2f} / {max(t_scores):.2f} / {sum(t_scores)/len(t_scores):.2f}**"
             )
+            if manual_ratio_avg is None:
+                st.warning('Manual t/c ratio cannot be computed because c contains only 0.')
+            elif system_ratio is None:
+                st.info('System ratio not found for this image in uploads.db.')
+                st.write(f"Manual t/c ratio avg: **{manual_ratio_avg:.6f}**")
+            else:
+                ratio_diff = manual_ratio_avg - system_ratio
+                st.write(f"System ratio: **{system_ratio:.6f}**")
+                st.write(f"Manual t/c ratio avg: **{manual_ratio_avg:.6f}**")
+                st.write(f"Difference (manual - system): **{ratio_diff:.6f}**")
 
 
 def main():

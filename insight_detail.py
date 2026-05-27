@@ -31,13 +31,17 @@ def render_insight_detail_page(detail_id):
         metrics = {
             'c': detail_entry.get('c'),
             't': detail_entry.get('t'),
+            'bg': None,
             'ratio': detail_entry.get('ratio'),
+            'ct_bg_sum': detail_entry.get('ct_bg_sum'),
         }
     st.table([{
         'id': detail_entry.get('id'),
         'c': metrics.get('c'),
         't': metrics.get('t'),
+        'bg': metrics.get('bg'),
         'ratio': metrics.get('ratio'),
+        '(c-bg)+(t-bg)': metrics.get('ct_bg_sum'),
     }])
 
     show_paths = [

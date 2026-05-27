@@ -2,6 +2,7 @@
 
 import streamlit as st
 import pandas as pd
+import base64
 from image_processing import (
     process_image_to_grayscale,
     build_enhanced_detection_image,
@@ -10,13 +11,39 @@ from image_processing import (
 )
 from pathlib import Path
 from datetime import datetime
-from uploads_db import init_uploads_db, upsert_upload_record
+from uploads_db import (
+    init_uploads_db,
+    upsert_upload_record,
+    get_starred_status,
+    set_starred_status,
+)
 
 try:
     from PIL import Image, ImageOps, UnidentifiedImageError
 except Exception:
     Image = None
     UnidentifiedImageError = Exception
+
+
+ASSETS_DIR = Path(__file__).parent / 'assets'
+STAR_ICON_PATH = ASSETS_DIR / 'star.png'
+YELLOW_STAR_ICON_PATH = ASSETS_DIR / 'yellow_star.png'
+
+
+@st.cache_data(show_spinner=False)
+def _read_icon_base64(path_str):
+    p = Path(path_str)
+    if not p.exists():
+        return ''
+    return base64.b64encode(p.read_bytes()).decode('ascii')
+
+
+def _build_star_button_label(starred):
+    icon_path = YELLOW_STAR_ICON_PATH if starred else STAR_ICON_PATH
+    icon_b64 = _read_icon_base64(str(icon_path))
+    if not icon_b64:
+        return '⭐' if starred else '☆'
+    return f"![star](data:image/png;base64,{icon_b64})"
 
 
 def _extract_image_datetime(pil_img):
@@ -35,6 +62,29 @@ def render_library_page():
     st.title('Library')
     st.write(
         'Upload images or CSV datasets. Images show as thumbnails; CSVs show a preview.')
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stButton"] button:has(img[alt="star"]) {
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+            min-height: auto !important;
+            line-height: 1 !important;
+        }
+        div[data-testid="stButton"] button:has(img[alt="star"]):hover {
+            background: transparent !important;
+        }
+        div[data-testid="stButton"] button:has(img[alt="star"]) img {
+            width: 20px !important;
+            height: 20px !important;
+            display: block !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     uploads_dir = Path(__file__).parent / 'uploads'
     uploads_dir.mkdir(exist_ok=True)
@@ -104,10 +154,24 @@ def render_library_page():
             recrop_overlay = None
             c_val = None
             t_val = None
+            bg_val = None
             ratio_val = None
+            ct_bg_sum_val = None
             cols = st.columns([1, 2, 4])
             with cols[0]:
-                st.markdown(f"**ID**\n\n`{img_id}`")
+                is_starred = get_starred_status(img_id)
+                mark_col, id_col = st.columns([1, 3])
+                with mark_col:
+                    if st.button(
+                        _build_star_button_label(is_starred),
+                        key=f'lib_star_{img_id}',
+                        width='content',
+                        type='tertiary',
+                    ):
+                        set_starred_status(img_id, not is_starred)
+                        st.rerun()
+                with id_col:
+                    st.markdown(f"**ID**\n\n`{img_id}`")
 
             analysis = analyze_library_image(gray)
             cropped = analysis["cropped"]
@@ -119,7 +183,9 @@ def render_library_page():
             table_rows = analysis["table_rows"]
             c_val = analysis["c"]
             t_val = analysis["t"]
+            bg_val = analysis.get("bg")
             ratio_val = analysis["ratio"]
+            ct_bg_sum_val = analysis.get("ct_bg_sum")
             vertical_crop_reason = analysis["vertical_crop_reason"]
 
             if recrop_overlay is not None:
@@ -127,10 +193,12 @@ def render_library_page():
                     st.image(
                         recrop_overlay,
                         caption=f"Dark Line Regions Re-Crop — {name}",
-                        width='stretch'
+                        width=240
                     )
                 with cols[2]:
-                    mean_only_df = pd.DataFrame(table_rows)[['name', 'gray_mean']]
+                    mean_only_df = pd.DataFrame(table_rows)[['name', 'gray_mean']].rename(
+                        columns={'gray_mean': 'dark_value'}
+                    )
                     st.dataframe(mean_only_df, width='stretch')
             else:
                 with cols[1]:
@@ -183,7 +251,9 @@ def render_library_page():
                     'metrics': {
                         'c': round(float(c_val), 4) if c_val is not None else None,
                         't': round(float(t_val), 4) if t_val is not None else None,
-                        'ratio': round(float(ratio_val), 6) if ratio_val is not None else None,
+                        'bg': round(float(bg_val), 4) if bg_val is not None else None,
+                        'ratio': round(float(ratio_val), 4) if ratio_val is not None else None,
+                        'ct_bg_sum': round(float(ct_bg_sum_val), 4) if ct_bg_sum_val is not None else None,
                     },
                     'vertical_crop_reason': vertical_crop_reason
                 }
@@ -197,7 +267,9 @@ def render_library_page():
                     'dark_regions_path': str(dark_path) if cropped_overlay is not None else '',
                     'c': round(float(c_val), 4) if c_val is not None else None,
                     't': round(float(t_val), 4) if t_val is not None else None,
-                    'ratio': round(float(ratio_val), 6) if ratio_val is not None else None,
+                    'ratio': round(float(ratio_val), 4) if ratio_val is not None else None,
+                    'ct_bg_sum': round(float(ct_bg_sum_val), 4) if ct_bg_sum_val is not None else None,
+                    'starred': 1 if is_starred else 0,
                     'detail': detail_payload,
                     'date': now.strftime('%Y-%m-%d'),
                     'time': now.strftime('%H:%M:%S'),
