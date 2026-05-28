@@ -235,7 +235,7 @@ def render_human_review_page():
             st.session_state.review_random_image_name = picked.name if picked else ''
             st.rerun()
 
-        st.write('**History**')
+        st.write('History')
         history_rows = _load_history_rows()
         if history_rows:
             st.dataframe(history_rows, hide_index=True, width='stretch')
@@ -243,18 +243,18 @@ def render_human_review_page():
             st.info('No review history yet.')
 
     with table_col:
-        st.write('**Visual Score**')
+        st.write('Visual Score')
 
         header_cols = st.columns([1, 2, 2])
-        header_cols[0].markdown('**title**')
-        header_cols[1].markdown('**c**')
-        header_cols[2].markdown('**t**')
+        header_cols[0].write('title')
+        header_cols[1].write('c')
+        header_cols[2].write('t')
 
         table_key_prefix = random_image_path.stem
         review_rows = []
         for row in range(1, 6):
             row_cols = st.columns([1, 2, 2])
-            row_cols[0].markdown(f'**{row}**')
+            row_cols[0].write(str(row))
             c_value = row_cols[1].text_input(
                 label=f'c_{row}',
                 label_visibility='collapsed',
@@ -302,23 +302,23 @@ def render_human_review_page():
             manual_ratios = [float(r['t']) / float(r['c']) for r in review_rows if float(r['c']) != 0]
             manual_ratio_avg = (sum(manual_ratios) / len(manual_ratios)) if manual_ratios else None
 
-            st.write(f'Image ID: **{image_id}**')
+            st.write(f'Image ID: {image_id}')
             st.write(
-                f"c min/max/avg: **{min(c_scores):.2f} / {max(c_scores):.2f} / {sum(c_scores)/len(c_scores):.2f}**"
+                f"c min/max/avg: {min(c_scores):.2f} / {max(c_scores):.2f} / {sum(c_scores)/len(c_scores):.2f}"
             )
             st.write(
-                f"t min/max/avg: **{min(t_scores):.2f} / {max(t_scores):.2f} / {sum(t_scores)/len(t_scores):.2f}**"
+                f"t min/max/avg: {min(t_scores):.2f} / {max(t_scores):.2f} / {sum(t_scores)/len(t_scores):.2f}"
             )
             if manual_ratio_avg is None:
                 st.warning('Manual t/c ratio cannot be computed because c contains only 0.')
             elif system_ratio is None:
                 st.info('System ratio not found for this image in uploads.db.')
-                st.write(f"Manual t/c ratio avg: **{manual_ratio_avg:.6f}**")
+                st.write(f"Manual t/c ratio avg: {manual_ratio_avg:.6f}")
             else:
                 ratio_diff = manual_ratio_avg - system_ratio
-                st.write(f"System ratio: **{system_ratio:.6f}**")
-                st.write(f"Manual t/c ratio avg: **{manual_ratio_avg:.6f}**")
-                st.write(f"Difference (manual - system): **{ratio_diff:.6f}**")
+                st.write(f"System ratio: {system_ratio:.6f}")
+                st.write(f"Manual t/c ratio avg: {manual_ratio_avg:.6f}")
+                st.write(f"Difference (manual - system): {ratio_diff:.6f}")
 
 
 def main():

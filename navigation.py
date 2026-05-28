@@ -24,6 +24,11 @@ PAGE_GROUPS = [
                 'name': 'Review',
                 'label': 'Review',
                 'description': 'Manual review page with side-by-side image checks and visual score inputs.'
+            },
+            {
+                'name': 'Database',
+                'label': 'Database',
+                'description': 'View tables from experiment_data.db using a dropdown selector.'
             }
         ]
     },
@@ -56,19 +61,23 @@ PAGE_BY_LABEL = {
 def render_sidebar_navigation():
     default_page_label = PAGE_DEFINITIONS[0]['label']
 
-    if 'selected_page_label' not in st.session_state:
-        st.session_state.selected_page_label = default_page_label
+    if 'selected_page_label_radio' not in st.session_state:
+        st.session_state.selected_page_label_radio = default_page_label
 
-    if st.session_state.selected_page_label not in PAGE_BY_LABEL:
-        st.session_state.selected_page_label = default_page_label
+    if st.session_state.selected_page_label_radio not in PAGE_BY_LABEL:
+        st.session_state.selected_page_label_radio = default_page_label
+
+    # Keep canonical selection synced from widget state to avoid
+    # two-click updates caused by mixed index/key/session assignments.
+    def _sync_selected_page():
+        st.session_state.selected_page_label = st.session_state.selected_page_label_radio
 
     labels = [p['label'] for p in PAGE_DEFINITIONS]
-    selected_idx = labels.index(st.session_state.selected_page_label)
-    selected_page_label = st.sidebar.radio(
+    st.sidebar.radio(
         'Pages',
         options=labels,
-        index=selected_idx,
-        key='selected_page_label_radio'
+        key='selected_page_label_radio',
+        on_change=_sync_selected_page,
     )
-    st.session_state.selected_page_label = selected_page_label
-    return selected_page_label
+    st.session_state.selected_page_label = st.session_state.selected_page_label_radio
+    return st.session_state.selected_page_label_radio

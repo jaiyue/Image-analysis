@@ -8,6 +8,7 @@ from library import render_library_page
 from standard import render_standard_page
 from insight import render_insights_page
 from human_review import render_human_review_page
+from database import render_database_page
 from image_processing import upload_and_convert_to_grayscale
 
 st.set_page_config(
@@ -24,6 +25,7 @@ PAGE_HANDLERS = {
     'Standard': lambda: render_standard_page(),
     'Insights': lambda: render_insights_page(),
     'Review': lambda: render_human_review_page(),
+    'Database': lambda: render_database_page(),
     'Settings': lambda: render_settings_page(),
 }
 

@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     experiment_id INTEGER PRIMARY KEY,
     experiment_name TEXT,
     experiment_date TEXT,
-    operator_name TEXT,
+    operator_name TEXT DEFAULT 'A.Li',
     running_buffer_lot_id INTEGER,
     sample_pad_material TEXT,
     sample_pad_pretreatment_lot_id INTEGER,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     reference_line_concentration REAL,
     conjugate_batch_lot_id INTEGER,
     conjugate_ratio REAL,
-    loading_volume_ul REAL,
+    conjugate_loading_ul_per_cm REAL,
     reconstitution_volume_ul REAL,
     drying_condition TEXT,
     storage_condition TEXT,
@@ -83,9 +83,7 @@ CREATE TABLE IF NOT EXISTS reagent_lots (
     reagent_type TEXT,
     composition_details TEXT,
     manufacture_date TEXT,
-    expiry_date TEXT,
-    prepared_by TEXT,
-    storage_condition TEXT,
+    prepared_by TEXT DEFAULT 'A.Li',
     notes TEXT
 );
 

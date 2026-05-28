@@ -3,6 +3,7 @@
 import streamlit as st
 import pandas as pd
 import base64
+import sqlite3
 from image_processing import (
     process_image_to_grayscale,
     build_enhanced_detection_image,
@@ -10,7 +11,7 @@ from image_processing import (
     analyze_library_image,
 )
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 from uploads_db import (
     init_uploads_db,
     upsert_upload_record,
@@ -28,6 +29,56 @@ except Exception:
 ASSETS_DIR = Path(__file__).parent / 'assets'
 STAR_ICON_PATH = ASSETS_DIR / 'star.png'
 YELLOW_STAR_ICON_PATH = ASSETS_DIR / 'yellow_star.png'
+EXPERIMENT_DB_PATH = Path(__file__).parent / 'experiment_data.db'
+UPLOADS_DB_PATH = Path(__file__).parent / 'uploads.db'
+
+CHANGED_FIELD_NAMES = [
+    'nitrocellulose_material',
+    'sample_pad_material',
+    'sample_pad_pretreatment_lot',
+    'conjugate_pad_material',
+    'conjugate_pad_pretreatment_lot',
+    'absorbent_pad_material',
+    'running_buffer_lot',
+    'glide_buffer_lot',
+    'test_line_reagent',
+    'test_line_concentration_mg_ml',
+    'reference_line_reagent',
+    'reference_line_concentration_mg_ml',
+    'glide_volume_ul_per_cm',
+    'conjugate_batch_id',
+    'gnp_lot',
+    'conjugate_ratio',
+    'reconstitution_volume_ul',
+    'conjugate_loading_ul_per_cm',
+]
+
+EXPERIMENT_DEFAULT_VALUES = {
+    'operator_name': 'A.Li',
+    'test_line_reagent': 'Bovine IgG',
+    'reference_line_reagent': 'Chicken IgY',
+}
+
+EXPERIMENT_FIELD_SPECS = [
+    {'ui': 'nitrocellulose_material', 'db': 'nitrocellulose_material', 'kind': 'text'},
+    {'ui': 'sample_pad_material', 'db': 'sample_pad_material', 'kind': 'text'},
+    {'ui': 'sample_pad_pretreatment_lot', 'db': 'sample_pad_pretreatment_lot_id', 'kind': 'lot_select'},
+    {'ui': 'conjugate_pad_material', 'db': 'conjugate_pad_material', 'kind': 'text'},
+    {'ui': 'conjugate_pad_pretreatment_lot', 'db': 'conjugate_pad_pretreatment_lot_id', 'kind': 'lot_select'},
+    {'ui': 'absorbent_pad_material', 'db': 'absorbent_pad_material', 'kind': 'text'},
+    {'ui': 'running_buffer_lot', 'db': 'running_buffer_lot_id', 'kind': 'lot_select'},
+    {'ui': 'glide_buffer_lot', 'db': 'glide_buffer_lot_id', 'kind': 'lot_select'},
+    {'ui': 'test_line_reagent', 'db': 'test_line_reagent', 'kind': 'text'},
+    {'ui': 'test_line_concentration_mg_ml', 'db': 'test_line_concentration', 'kind': 'number'},
+    {'ui': 'reference_line_reagent', 'db': 'reference_line_reagent', 'kind': 'text'},
+    {'ui': 'reference_line_concentration_mg_ml', 'db': 'reference_line_concentration', 'kind': 'number'},
+    {'ui': 'glide_volume_ul_per_cm', 'db': 'glide_volume_ul_per_cm', 'kind': 'number'},
+    {'ui': 'conjugate_batch_id', 'db': 'conjugate_batch_id', 'kind': 'text'},
+    {'ui': 'gnp_lot', 'db': 'gnp_lot_id', 'kind': 'lot_select'},
+    {'ui': 'conjugate_ratio', 'db': 'conjugate_ratio', 'kind': 'number'},
+    {'ui': 'reconstitution_volume_ul', 'db': 'reconstitution_volume_ul', 'kind': 'number'},
+    {'ui': 'conjugate_loading_ul_per_cm', 'db': 'conjugate_loading_ul_per_cm', 'kind': 'number'},
+]
 
 
 @st.cache_data(show_spinner=False)
@@ -56,6 +107,338 @@ def _extract_image_datetime(pil_img):
     except Exception:
         return None
     return None
+
+
+def _get_latest_upload_date():
+    if not UPLOADS_DB_PATH.exists():
+        return date.today().isoformat()
+    conn = None
+    try:
+        conn = sqlite3.connect(UPLOADS_DB_PATH)
+        row = conn.execute(
+            """
+            SELECT date
+            FROM upload_records
+            WHERE date IS NOT NULL
+              AND TRIM(date) != ''
+            ORDER BY date DESC, time DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception:
+        pass
+    finally:
+        if conn is not None:
+            conn.close()
+    return date.today().isoformat()
+
+
+def _get_experiment_columns():
+    if not EXPERIMENT_DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        rows = conn.execute('PRAGMA table_info("experiments")').fetchall()
+        return [
+            {
+                'name': r[1],
+                'type': (r[2] or '').upper(),
+                'not_null': bool(r[3]),
+                'is_pk': bool(r[5]),
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def _migrate_experiment_loading_column():
+    if not EXPERIMENT_DB_PATH.exists():
+        return
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        col_rows = conn.execute('PRAGMA table_info("experiments")').fetchall()
+        col_names = {r[1] for r in col_rows}
+        if 'loading_volume_ul' in col_names and 'conjugate_loading_ul_per_cm' not in col_names:
+            conn.execute(
+                """
+                ALTER TABLE experiments
+                RENAME COLUMN loading_volume_ul TO conjugate_loading_ul_per_cm
+                """
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def _migrate_experiment_fields_for_changed_form():
+    if not EXPERIMENT_DB_PATH.exists():
+        return
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        col_rows = conn.execute('PRAGMA table_info("experiments")').fetchall()
+        col_names = {r[1] for r in col_rows}
+        required_cols = [
+            ('nitrocellulose_material', 'TEXT'),
+            ('absorbent_pad_material', 'TEXT'),
+            ('test_line_reagent', 'TEXT'),
+            ('reference_line_reagent', 'TEXT'),
+            ('glide_volume_ul_per_cm', 'REAL'),
+            ('conjugate_batch_id', 'TEXT'),
+            ('gnp_lot_id', 'INTEGER'),
+            ('drying_time', 'TEXT'),
+            ('stability_timepoint', 'TEXT'),
+            ('changed_parameter', 'TEXT'),
+        ]
+        for col_name, col_type in required_cols:
+            if col_name in col_names:
+                continue
+            conn.execute(f'ALTER TABLE experiments ADD COLUMN "{col_name}" {col_type}')
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_experiment(payload):
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        cols = list(payload.keys())
+        placeholders = ', '.join(['?'] * len(cols))
+        cols_sql = ', '.join([f'"{c}"' for c in cols])
+        query = f'INSERT INTO "experiments" ({cols_sql}) VALUES ({placeholders})'
+        conn.execute(query, [payload[c] for c in cols])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _load_experiments_df():
+    if not EXPERIMENT_DB_PATH.exists():
+        return pd.DataFrame()
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        return pd.read_sql_query(
+            'SELECT * FROM experiments ORDER BY experiment_id DESC',
+            conn
+        )
+    finally:
+        conn.close()
+
+
+def _load_reagent_lot_options():
+    if not EXPERIMENT_DB_PATH.exists():
+        return {}
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        rows = conn.execute(
+            """
+            SELECT lot_id, lot_number
+            FROM reagent_lots
+            WHERE lot_number IS NOT NULL
+              AND TRIM(lot_number) != ''
+            ORDER BY lot_id
+            """
+        ).fetchall()
+        return {int(r[0]): str(r[1]) for r in rows}
+    finally:
+        conn.close()
+
+
+def _load_latest_experiment_row():
+    if not EXPERIMENT_DB_PATH.exists():
+        return {}
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM experiments
+            ORDER BY experiment_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def _render_experiment_selector():
+    st.subheader('Experiment')
+    mode = st.radio(
+        'Experiment mode',
+        options=['New experiment', 'Exist experiment'],
+        horizontal=True,
+        key='library_experiment_mode',
+    )
+
+    if mode == 'New experiment':
+        cols = _get_experiment_columns()
+        if not cols:
+            st.warning('experiments table not found in experiment_data.db.')
+            return
+
+        db_cols = {c['name']: c for c in cols}
+        required_db_fields = ['experiment_name', 'operator_name'] + [f['db'] for f in EXPERIMENT_FIELD_SPECS]
+        missing_db_fields = [name for name in required_db_fields if name not in db_cols]
+        if missing_db_fields:
+            st.error(f'Missing experiments columns: {", ".join(missing_db_fields)}')
+            return
+
+        latest_row = _load_latest_experiment_row()
+        has_baseline = bool(latest_row)
+        lot_options = _load_reagent_lot_options()
+
+        st.caption(f'Hidden autofill: experiment_date = {_get_latest_upload_date()}')
+        if not has_baseline:
+            st.info('No baseline experiment found. Please fill all fields once.')
+
+        form_values = {}
+        title_col, changed_col = st.columns(2)
+        form_values['experiment_name'] = title_col.text_input(
+            'experiment_title *',
+            value='',
+            placeholder='not empty',
+            key='library_exp_experiment_name',
+        )
+
+        changed_default = st.session_state.get('library_changed_field', CHANGED_FIELD_NAMES[0])
+        if changed_default not in CHANGED_FIELD_NAMES:
+            changed_default = CHANGED_FIELD_NAMES[0]
+        changed_ui = changed_col.selectbox(
+            'changed',
+            options=CHANGED_FIELD_NAMES,
+            index=CHANGED_FIELD_NAMES.index(changed_default),
+            key='library_exp_changed_selector',
+        )
+        st.session_state['library_changed_field'] = changed_ui
+
+        show_specs = [s for s in EXPERIMENT_FIELD_SPECS if s['ui'] != changed_ui]
+
+        for i in range(0, len(show_specs), 3):
+            row_cols = st.columns(3)
+            for j, spec in enumerate(show_specs[i:i + 3]):
+                ui_label = spec['ui']
+                db_name = spec['db']
+                latest_val = latest_row.get(db_name)
+
+                if spec['kind'] == 'lot_select':
+                    option_values = [None] + sorted(lot_options.keys())
+                    default_lot = None
+                    if latest_val is not None:
+                        try:
+                            default_lot = int(latest_val)
+                        except Exception:
+                            default_lot = None
+                    default_idx = option_values.index(default_lot) if default_lot in option_values else 0
+                    form_values[db_name] = row_cols[j].selectbox(
+                        f'{ui_label} *',
+                        options=option_values,
+                        index=default_idx,
+                        format_func=lambda x, _m=lot_options: (
+                            'Select lot'
+                            if x is None
+                            else _m.get(x, '')
+                        ),
+                        key=f'library_exp_{db_name}',
+                    )
+                else:
+                    default_val = '' if latest_val is None else str(latest_val)
+                    if default_val == '':
+                        default_val = EXPERIMENT_DEFAULT_VALUES.get(db_name, '')
+                    form_values[db_name] = row_cols[j].text_input(
+                        f'{ui_label} *',
+                        value=default_val,
+                        placeholder='not empty',
+                        key=f'library_exp_{db_name}',
+                    )
+
+        save_clicked = st.button('Save experiment', key='library_save_experiment', width='content')
+
+        if save_clicked:
+            title = (form_values.get('experiment_name') or '').strip()
+            if title == '':
+                st.error('Not empty required: experiment_title')
+                return
+
+            payload = {'experiment_date': _get_latest_upload_date()}
+            payload['experiment_name'] = title
+            payload['operator_name'] = (latest_row.get('operator_name') or 'A.Li')
+            payload['changed_parameter'] = changed_ui
+
+            # Start from baseline to avoid refilling unchanged items.
+            if has_baseline:
+                for spec in EXPERIMENT_FIELD_SPECS:
+                    db_name = spec['db']
+                    if db_name in latest_row:
+                        payload[db_name] = latest_row.get(db_name)
+
+            missing = []
+            convert_errors = []
+            target_specs = [s for s in EXPERIMENT_FIELD_SPECS if s['ui'] != changed_ui]
+
+            for spec in target_specs:
+                ui_label = spec['ui']
+                db_name = spec['db']
+                raw = form_values.get(db_name)
+
+                if spec['kind'] == 'lot_select':
+                    if raw is None:
+                        missing.append(ui_label)
+                        continue
+                    payload[db_name] = int(raw)
+                    continue
+
+                raw_text = (raw or '').strip()
+                if raw_text == '':
+                    missing.append(ui_label)
+                    continue
+
+                if spec['kind'] == 'number':
+                    try:
+                        payload[db_name] = float(raw_text)
+                    except ValueError:
+                        convert_errors.append(f'{ui_label} expects a numeric value.')
+                else:
+                    payload[db_name] = raw_text
+
+            if missing:
+                st.error(f'Not empty required: {", ".join(missing)}')
+            elif convert_errors:
+                st.error('; '.join(convert_errors))
+            else:
+                try:
+                    _insert_experiment(payload)
+                    st.success('Experiment saved.')
+                    st.rerun()
+                except Exception as e:
+                    st.error(f'Failed to save experiment: {e}')
+    else:
+        exp_df = _load_experiments_df()
+        if exp_df.empty:
+            st.info('No experiments found.')
+            return
+        display_df = exp_df.copy()
+        selected_id = st.session_state.get('library_selected_experiment_id')
+        display_df.insert(0, 'select', display_df['experiment_id'] == selected_id)
+        edited = st.data_editor(
+            display_df,
+            hide_index=True,
+            width='stretch',
+            key='library_existing_experiment_editor',
+            column_config={
+                'select': st.column_config.CheckboxColumn('select')
+            },
+        )
+        selected_rows = edited[edited['select'] == True]  # noqa: E712
+        if not selected_rows.empty:
+            new_selected = int(selected_rows.iloc[0]['experiment_id'])
+            st.session_state['library_selected_experiment_id'] = new_selected
+            st.caption(f'Selected experiment_id: {new_selected}')
+        else:
+            st.caption('No experiment selected.')
 
 
 def render_library_page():
@@ -89,6 +472,10 @@ def render_library_page():
     uploads_dir = Path(__file__).parent / 'uploads'
     uploads_dir.mkdir(exist_ok=True)
     init_uploads_db()
+    _migrate_experiment_loading_column()
+    _migrate_experiment_fields_for_changed_form()
+    _render_experiment_selector()
+    st.divider()
 
     uploaded_files = st.file_uploader(
         'Upload images or CSV files',
@@ -149,6 +536,25 @@ def render_library_page():
 
     if images:
         st.subheader('Images')
+        default_changed = st.session_state.get('library_changed_field', CHANGED_FIELD_NAMES[0])
+        if default_changed not in CHANGED_FIELD_NAMES:
+            default_changed = CHANGED_FIELD_NAMES[0]
+        selected_changed_field = st.selectbox(
+            'changed *',
+            options=CHANGED_FIELD_NAMES,
+            index=CHANGED_FIELD_NAMES.index(default_changed),
+            key='library_images_changed_selector',
+        )
+        changed_value = st.text_input(
+            f'{selected_changed_field} *',
+            value=st.session_state.get('library_changed_value', ''),
+            key='library_changed_value_input',
+            placeholder='not empty',
+        )
+        st.session_state['library_changed_value'] = changed_value
+        st.session_state['library_changed_field'] = selected_changed_field
+        changed_value_required_missing = (changed_value or '').strip() == ''
+
         for img_id, name, img, gray, enhanced, black_white, image_dt in images:
             cropped_overlay = None
             recrop_overlay = None
@@ -171,7 +577,7 @@ def render_library_page():
                         set_starred_status(img_id, not is_starred)
                         st.rerun()
                 with id_col:
-                    st.markdown(f"**ID**\n\n`{img_id}`")
+                    st.markdown(f"ID\n\n`{img_id}`")
 
             analysis = analyze_library_image(gray)
             cropped = analysis["cropped"]
@@ -270,6 +676,8 @@ def render_library_page():
                     'ratio': round(float(ratio_val), 4) if ratio_val is not None else None,
                     'ct_bg_sum': round(float(ct_bg_sum_val), 4) if ct_bg_sum_val is not None else None,
                     'starred': 1 if is_starred else 0,
+                    'changed_field': selected_changed_field,
+                    'changed_value': changed_value.strip() if not changed_value_required_missing else None,
                     'detail': detail_payload,
                     'date': now.strftime('%Y-%m-%d'),
                     'time': now.strftime('%H:%M:%S'),
@@ -278,6 +686,8 @@ def render_library_page():
                 upsert_upload_record(entry)
             except Exception:
                 st.warning('Failed to save cropped image or write to uploads.db')
+        if changed_value_required_missing:
+            st.warning('changed value is empty. Please fill it for this upload batch.')
 
     if tables:
         st.subheader('Datasets')

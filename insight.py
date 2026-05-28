@@ -229,7 +229,7 @@ def render_insights_page():
     headers = ['star', 'id', 'c', 't', 'ratio', '(c-bg)+(t-bg)', 'date', 'time', 'detail']
     for i, h in enumerate(headers):
         with head_cols[i]:
-            st.markdown(f'**{h}**')
+            st.write(h)
 
     for _, row in filtered_df.iterrows():
         row_cols = st.columns([0.8, 1, 1, 1, 1, 1.3, 1, 1, 1])
@@ -246,7 +246,7 @@ def render_insights_page():
         with row_cols[1]:
             id_color = _ratio_group_color(row.get('ratio_group'))
             st.markdown(
-                f"<span style='color:{id_color};font-weight:600'>{row['id']}</span>",
+                f"<span style='color:{id_color};font-weight:400'>{row['id']}</span>",
                 unsafe_allow_html=True,
             )
         with row_cols[2]:

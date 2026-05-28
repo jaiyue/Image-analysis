@@ -31,6 +31,8 @@ def init_uploads_db():
                 ratio REAL,
                 ct_bg_sum REAL,
                 starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1)),
+                changed_field TEXT,
+                changed_value TEXT,
                 detail_json TEXT,
                 date TEXT,
                 time TEXT,
@@ -66,6 +68,12 @@ def _ensure_schema_updates():
             conn.commit()
         if "starred" not in col_names:
             conn.execute("ALTER TABLE upload_records ADD COLUMN starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1))")
+            conn.commit()
+        if "changed_field" not in col_names:
+            conn.execute("ALTER TABLE upload_records ADD COLUMN changed_field TEXT")
+            conn.commit()
+        if "changed_value" not in col_names:
+            conn.execute("ALTER TABLE upload_records ADD COLUMN changed_value TEXT")
             conn.commit()
     finally:
         conn.close()
@@ -308,9 +316,9 @@ def upsert_upload_record(entry):
             """
             INSERT INTO upload_records (
                 id, original_name, original_path, gray_path, cropped_name,
-                cropped_path, dark_regions_path, c, t, ratio, ct_bg_sum, starred, detail_json,
+                cropped_path, dark_regions_path, c, t, ratio, ct_bg_sum, starred, changed_field, changed_value, detail_json,
                 date, time, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 original_name=excluded.original_name,
                 original_path=excluded.original_path,
@@ -326,6 +334,8 @@ def upsert_upload_record(entry):
                     WHEN excluded.starred IS NULL THEN upload_records.starred
                     ELSE excluded.starred
                 END,
+                changed_field=excluded.changed_field,
+                changed_value=excluded.changed_value,
                 detail_json=excluded.detail_json,
                 date=excluded.date,
                 time=excluded.time,
@@ -344,6 +354,8 @@ def upsert_upload_record(entry):
                 _r4(entry.get('ratio')) if entry.get('ratio') is not None else None,
                 _r4(entry.get('ct_bg_sum')) if entry.get('ct_bg_sum') is not None else None,
                 entry.get('starred'),
+                entry.get('changed_field'),
+                entry.get('changed_value'),
                 json.dumps(entry.get('detail', {}), ensure_ascii=False),
                 entry.get('date'),
                 entry.get('time'),
