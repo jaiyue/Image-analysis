@@ -27,7 +27,7 @@ def _build_star_button_label(starred):
     return f"![star](data:image/png;base64,{icon_b64})"
 
 
-def _assign_ratio_groups(df, threshold=0.1):
+def _assign_ratio_groups(df, threshold=0.2):
     if df.empty:
         out = df.copy()
         out['ratio_group'] = None
@@ -65,6 +65,31 @@ def _ratio_group_color(group_id):
     if group_id is None or pd.isna(group_id):
         return '#333333'
     return palette[int(group_id) % len(palette)]
+
+
+def _fmt4(v):
+    if v is None or pd.isna(v):
+        return ''
+    try:
+        return f'{float(v):.4f}'
+    except Exception:
+        return str(v)
+
+
+def _fmt_date_simple(v):
+    if v is None or pd.isna(v):
+        return 'None'
+    dt = pd.to_datetime(v, errors='coerce')
+    if pd.notna(dt):
+        return f"{dt.strftime('%b')} {int(dt.day)}"
+    return 'None'
+
+
+def _fmt_time_simple(v):
+    if v is None or pd.isna(v):
+        return 'None'
+    text = str(v).strip()
+    return text if text else 'None'
 
 
 def render_insights_page():
@@ -105,7 +130,7 @@ def render_insights_page():
     except Exception:
         rows = []
 
-    table_df = pd.DataFrame(rows, columns=['id', 'c', 't', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred'])
+    table_df = pd.DataFrame(rows, columns=['id', 'c', 't', 'bg', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred'])
     if not table_df.empty:
         table_df = table_df.sort_values(by=['date', 'time'], ascending=[False, False]).reset_index(drop=True)
         st.session_state['insight_table_cache'] = table_df.copy()
@@ -115,6 +140,12 @@ def render_insights_page():
     if table_df.empty:
         st.info('No insight data yet. Process images in Library first.')
         return
+
+    table_df['raw_c'] = pd.to_numeric(table_df['c'], errors='coerce')
+    table_df['raw_t'] = pd.to_numeric(table_df['t'], errors='coerce')
+    table_df['bg_num'] = pd.to_numeric(table_df['bg'], errors='coerce')
+    table_df['correct_c'] = table_df['raw_c'] - table_df['bg_num']
+    table_df['correct_t'] = table_df['raw_t'] - table_df['bg_num']
 
     st.caption('Note: `ratio` is the normalized T/C metric; `(c-bg)+(t-bg)` helps distinguish strips with similar ratio but different absolute color intensity.')
 
@@ -150,7 +181,8 @@ def render_insights_page():
         start_date, end_date = date_range
         if start_date is not None and end_date is not None:
             d = pd.to_datetime(filtered_df['date'], errors='coerce').dt.date
-            filtered_df = filtered_df[(d >= start_date) & (d <= end_date)]
+            in_range = (d >= start_date) & (d <= end_date)
+            filtered_df = filtered_df[in_range | d.isna()]
 
     filtered_df['ratio_num'] = pd.to_numeric(filtered_df['ratio'], errors='coerce')
     if ratio_bucket == '0~0.9':
@@ -173,7 +205,7 @@ def render_insights_page():
         filtered_df = filtered_df
 
     if ratio_grouping:
-        filtered_df = _assign_ratio_groups(filtered_df, threshold=0.1)
+        filtered_df = _assign_ratio_groups(filtered_df, threshold=0.2)
         filtered_df = filtered_df.sort_values(
             by=['ratio_group', 'ratio_num', 'date', 'time'],
             ascending=[True, True, False, False],
@@ -186,7 +218,9 @@ def render_insights_page():
             ascending=[False, False],
         ).reset_index(drop=True)
 
-    export_df = filtered_df[['id', 'c', 't', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred']]
+    export_df = filtered_df[
+        ['id', 'raw_c', 'raw_t', 'correct_c', 'correct_t', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred']
+    ]
     csv_bytes = export_df.to_csv(index=False).encode('utf-8')
     st.markdown(
         """
@@ -225,14 +259,14 @@ def render_insights_page():
         st.info('No records matched current filters.')
         return
 
-    head_cols = st.columns([0.8, 1, 1, 1, 1, 1.3, 1, 1, 1])
-    headers = ['star', 'id', 'c', 't', 'ratio', '(c-bg)+(t-bg)', 'date', 'time', 'detail']
+    head_cols = st.columns([0.70, 0.95, 1, 1, 1, 1, 1, 1.3, 0.9, 0.95, 1.20])
+    headers = ['star', 'id', 'raw c', 'raw t', 'correct c', 'correct t', 'ratio', '(c-bg)+(t-bg)', 'date', 'time', 'detail']
     for i, h in enumerate(headers):
         with head_cols[i]:
             st.write(h)
 
     for _, row in filtered_df.iterrows():
-        row_cols = st.columns([0.8, 1, 1, 1, 1, 1.3, 1, 1, 1])
+        row_cols = st.columns([0.70, 0.95, 1, 1, 1, 1, 1, 1.3, 0.9, 0.95, 1.20])
         with row_cols[0]:
             is_starred = bool(row.get('starred'))
             if st.button(
@@ -250,18 +284,22 @@ def render_insights_page():
                 unsafe_allow_html=True,
             )
         with row_cols[2]:
-            st.write(row['c'])
+            st.write(_fmt4(row.get('raw_c')))
         with row_cols[3]:
-            st.write(row['t'])
+            st.write(_fmt4(row.get('raw_t')))
         with row_cols[4]:
-            st.write(row['ratio'])
+            st.write(_fmt4(row.get('correct_c')))
         with row_cols[5]:
-            st.write(row['ct_bg_sum'])
+            st.write(_fmt4(row.get('correct_t')))
         with row_cols[6]:
-            st.write(row['date'])
+            st.write(_fmt4(row.get('ratio')))
         with row_cols[7]:
-            st.write(row['time'])
+            st.write(_fmt4(row.get('ct_bg_sum')))
         with row_cols[8]:
+            st.write(_fmt_date_simple(row.get('date')))
+        with row_cols[9]:
+            st.write(_fmt_time_simple(row.get('time')))
+        with row_cols[10]:
             if st.button('Detail', key=f"insight_detail_{row['id']}"):
                 st.query_params['insight_detail_id'] = str(row['id'])
                 st.rerun()

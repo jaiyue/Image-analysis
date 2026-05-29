@@ -4,6 +4,7 @@ import streamlit as st
 import pandas as pd
 import base64
 import sqlite3
+import re
 from image_processing import (
     process_image_to_grayscale,
     build_enhanced_detection_image,
@@ -31,6 +32,8 @@ STAR_ICON_PATH = ASSETS_DIR / 'star.png'
 YELLOW_STAR_ICON_PATH = ASSETS_DIR / 'yellow_star.png'
 EXPERIMENT_DB_PATH = Path(__file__).parent / 'experiment_data.db'
 UPLOADS_DB_PATH = Path(__file__).parent / 'uploads.db'
+ANALYSIS_CACHE_VERSION = 'v2'
+PREPROCESS_CACHE_VERSION = 'v2'
 
 CHANGED_FIELD_NAMES = [
     'nitrocellulose_material',
@@ -105,7 +108,47 @@ def _extract_image_datetime(pil_img):
             if raw:
                 return datetime.strptime(str(raw), '%Y:%m:%d %H:%M:%S')
     except Exception:
+        pass
+    try:
+        info = getattr(pil_img, 'info', {}) or {}
+        for key in ('date:create', 'date:modify', 'creation_time', 'timestamp'):
+            raw = info.get(key)
+            if not raw:
+                continue
+            text = str(raw).strip()
+            for fmt in (
+                '%Y-%m-%dT%H:%M:%S',
+                '%Y-%m-%d %H:%M:%S',
+                '%Y:%m:%d %H:%M:%S',
+            ):
+                try:
+                    return datetime.strptime(text[:19], fmt)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
+
+
+def _extract_datetime_from_filename(name):
+    if not name:
         return None
+    patterns = [
+        (r'(\d{8})[_-](\d{6})', '%Y%m%d%H%M%S'),
+        (r'(\d{8})(\d{6})', '%Y%m%d%H%M%S'),
+        (r'(\d{4})[-_](\d{2})[-_](\d{2})[_-](\d{2})[-_](\d{2})[-_](\d{2})', None),
+    ]
+    for pattern, fmt in patterns:
+        m = re.search(pattern, str(name))
+        if not m:
+            continue
+        try:
+            if fmt:
+                return datetime.strptime(''.join(m.groups()), fmt)
+            y, mo, d, hh, mm, ss = [int(x) for x in m.groups()]
+            return datetime(y, mo, d, hh, mm, ss)
+        except Exception:
+            continue
     return None
 
 
@@ -487,6 +530,15 @@ def render_library_page():
         st.session_state['library_id_counter'] = 0
     if 'library_file_ids' not in st.session_state:
         st.session_state['library_file_ids'] = {}
+    if 'library_preprocess_cache' not in st.session_state:
+        st.session_state['library_preprocess_cache'] = {}
+    if st.session_state.get('library_preprocess_cache_version') != PREPROCESS_CACHE_VERSION:
+        st.session_state['library_preprocess_cache'] = {}
+        st.session_state['library_preprocess_cache_version'] = PREPROCESS_CACHE_VERSION
+    if 'library_analysis_cache' not in st.session_state:
+        st.session_state['library_analysis_cache'] = {}
+    if 'library_written_files' not in st.session_state:
+        st.session_state['library_written_files'] = set()
 
     if not uploaded_files:
         st.info('No files uploaded yet. Use the uploader to add images or CSVs.')
@@ -508,10 +560,6 @@ def render_library_page():
                 st.warning('Pillow is not available: cannot display images.')
                 break
             try:
-                src_img = Image.open(uploaded)
-                src_img = ImageOps.exif_transpose(src_img)
-                image_dt = _extract_image_datetime(src_img)
-                img = src_img.convert('RGB')
                 file_size = getattr(uploaded, 'size', None)
                 file_sig = f"{name}::{file_size}"
                 if file_sig not in st.session_state['library_file_ids']:
@@ -519,16 +567,35 @@ def render_library_page():
                     st.session_state['library_file_ids'][
                         file_sig] = f"{st.session_state['library_id_counter']:05d}"
                 img_id = st.session_state['library_file_ids'][file_sig]
+                prep_cache = st.session_state['library_preprocess_cache']
+                if file_sig in prep_cache:
+                    cached = prep_cache[file_sig]
+                    img = cached['img']
+                    gray = cached['gray']
+                    enhanced = cached['enhanced']
+                    black_white = cached['black_white']
+                    image_dt = cached['image_dt']
+                else:
+                    src_img = Image.open(uploaded)
+                    image_dt = _extract_image_datetime(src_img)
+                    src_img = ImageOps.exif_transpose(src_img)
+                    if image_dt is None:
+                        image_dt = _extract_image_datetime(src_img)
+                    if image_dt is None:
+                        image_dt = _extract_datetime_from_filename(name)
+                    img = src_img.convert('RGB')
+                    gray = process_image_to_grayscale(img.copy())
+                    enhanced = build_enhanced_detection_image(gray)
+                    black_white = build_black_white_image(enhanced)
+                    prep_cache[file_sig] = {
+                        'img': img,
+                        'gray': gray,
+                        'enhanced': enhanced,
+                        'black_white': black_white,
+                        'image_dt': image_dt,
+                    }
 
-                # Original grayscale (no enhancement)
-                gray = process_image_to_grayscale(img.copy())
-                # Enhanced detection image
-                enhanced = build_enhanced_detection_image(gray)
-                # Binary image for bar detection
-                black_white = build_black_white_image(enhanced)
-
-                images.append((img_id, name, img.copy(),
-                              gray, enhanced, black_white, image_dt))
+                images.append((img_id, name, img, gray, enhanced, black_white, image_dt, file_sig))
             except UnidentifiedImageError:
                 st.warning(f'File {name} is not a recognized image.')
             except Exception as e:
@@ -555,7 +622,7 @@ def render_library_page():
         st.session_state['library_changed_field'] = selected_changed_field
         changed_value_required_missing = (changed_value or '').strip() == ''
 
-        for img_id, name, img, gray, enhanced, black_white, image_dt in images:
+        for img_id, name, img, gray, enhanced, black_white, image_dt, file_sig in images:
             cropped_overlay = None
             recrop_overlay = None
             c_val = None
@@ -575,11 +642,16 @@ def render_library_page():
                         type='tertiary',
                     ):
                         set_starred_status(img_id, not is_starred)
-                        st.rerun()
                 with id_col:
                     st.markdown(f"ID\n\n`{img_id}`")
 
-            analysis = analyze_library_image(gray)
+            analysis_key = f'{ANALYSIS_CACHE_VERSION}::{file_sig}'
+            analysis_cache = st.session_state['library_analysis_cache']
+            if analysis_key in analysis_cache:
+                analysis = analysis_cache[analysis_key]
+            else:
+                analysis = analyze_library_image(gray)
+                analysis_cache[analysis_key] = analysis
             cropped = analysis["cropped"]
             vertical_overlay = analysis["vertical_overlay"]
             cropped_between = analysis["cropped_between"]
@@ -630,19 +702,22 @@ def render_library_page():
                 dark_path = uploads_dir / dark_filename
                 recrop_path = uploads_dir / recrop_filename
                 vertical_crop_path = uploads_dir / vertical_crop_filename
-                img.save(original_path)
-                gray.save(gray_path)
-                cropped.save(cropped_path)
-                vertical_overlay.save(cropped_vertical_path)
-                analysis_img_trimmed.save(cropped_trimmed_path)
-                if cropped_between is not None:
-                    cropped_between.save(vertical_crop_path)
-                if cropped_overlay is not None:
-                    cropped_overlay.save(dark_path)
-                if recrop_overlay is not None:
-                    recrop_overlay.save(recrop_path)
+                needs_file_write = file_sig not in st.session_state['library_written_files']
+                if needs_file_write:
+                    img.save(original_path)
+                    gray.save(gray_path)
+                    cropped.save(cropped_path)
+                    vertical_overlay.save(cropped_vertical_path)
+                    analysis_img_trimmed.save(cropped_trimmed_path)
+                    if cropped_between is not None:
+                        cropped_between.save(vertical_crop_path)
+                    if cropped_overlay is not None:
+                        cropped_overlay.save(dark_path)
+                    if recrop_overlay is not None:
+                        recrop_overlay.save(recrop_path)
+                    st.session_state['library_written_files'].add(file_sig)
 
-                now = image_dt or datetime.now()
+                now = image_dt
                 detail_payload = {
                     'images': {
                         'original_path': str(original_path),
@@ -673,15 +748,16 @@ def render_library_page():
                     'dark_regions_path': str(dark_path) if cropped_overlay is not None else '',
                     'c': round(float(c_val), 4) if c_val is not None else None,
                     't': round(float(t_val), 4) if t_val is not None else None,
+                    'bg': round(float(bg_val), 4) if bg_val is not None else None,
                     'ratio': round(float(ratio_val), 4) if ratio_val is not None else None,
                     'ct_bg_sum': round(float(ct_bg_sum_val), 4) if ct_bg_sum_val is not None else None,
                     'starred': 1 if is_starred else 0,
                     'changed_field': selected_changed_field,
                     'changed_value': changed_value.strip() if not changed_value_required_missing else None,
                     'detail': detail_payload,
-                    'date': now.strftime('%Y-%m-%d'),
-                    'time': now.strftime('%H:%M:%S'),
-                    'timestamp': now.isoformat(timespec='seconds')
+                    'date': now.strftime('%Y-%m-%d') if now else None,
+                    'time': now.strftime('%H:%M:%S') if now else None,
+                    'timestamp': now.isoformat(timespec='seconds') if now else None
                 }
                 upsert_upload_record(entry)
             except Exception:

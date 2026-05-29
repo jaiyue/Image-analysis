@@ -521,37 +521,106 @@ def crop_from_two_vertical_lines(gray_pil, threshold_scale=0.9, binary_pil=None)
     return gray_pil.crop((x0, y0, x1, y1)), (x0, y0, x1, y1), line_xs, candidate_xs
 
 
-def detect_line_regions(profile, threshold_scale=0.8, min_region_height=3):
+def detect_line_regions(
+    profile,
+    threshold_scale=0.8,
+    min_region_height=3,
+    edge_exclusion_ratio=0.02,
+    max_region_height_ratio=0.30,
+):
     """
     Detect dark line-like regions from a 1D intensity profile.
     Returns list of (start, end) row indices.
     """
     profile = np.asarray(profile, dtype=float)
-    mean_v = float(np.mean(profile))
-    std_v = float(np.std(profile))
-    threshold = mean_v * float(threshold_scale)
-    # Fallback threshold for low-contrast profiles
-    threshold = max(threshold, mean_v - 0.5 * std_v)
-    regions = []
-    in_region = False
-    start = 0
+    if profile.size == 0:
+        return []
 
-    for i, value in enumerate(profile):
-        if value < threshold and not in_region:
-            start = i
-            in_region = True
-        elif value >= threshold and in_region:
-            end = i
+    # Smooth to make faint valleys more stable.
+    if profile.size >= 5:
+        kernel = np.array([1, 2, 3, 2, 1], dtype=float)
+        kernel /= np.sum(kernel)
+        profile_s = np.convolve(profile, kernel, mode='same')
+    else:
+        profile_s = profile
+
+    mean_v = float(np.mean(profile_s))
+    std_v = float(np.std(profile_s))
+
+    def _collect_regions_with_threshold(threshold_value):
+        out = []
+        in_region = False
+        start = 0
+        for i, value in enumerate(profile_s):
+            if value < threshold_value and not in_region:
+                start = i
+                in_region = True
+            elif value >= threshold_value and in_region:
+                end = i
+                if end - start > int(min_region_height):
+                    out.append((start, end))
+                in_region = False
+        if in_region:
+            end = len(profile_s)
             if end - start > int(min_region_height):
-                regions.append((start, end))
-            in_region = False
+                out.append((start, end))
+        return out
 
-    if in_region:
-        end = len(profile)
-        if end - start > int(min_region_height):
-            regions.append((start, end))
+    base_thr = max(mean_v * float(threshold_scale), mean_v - 0.20 * std_v)
+    relaxed_thr_1 = max(base_thr, mean_v - 0.10 * std_v)
+    relaxed_thr_2 = max(relaxed_thr_1, float(np.percentile(profile_s, 52)))
+    relaxed_thr_3 = max(relaxed_thr_2, float(np.percentile(profile_s, 58)))
+    threshold_candidates = [base_thr, relaxed_thr_1, relaxed_thr_2, relaxed_thr_3]
 
-    return regions
+    regions = []
+    best_regions = []
+    for thr in threshold_candidates:
+        candidate = _collect_regions_with_threshold(thr)
+        if len(candidate) > len(best_regions):
+            best_regions = candidate
+        if len(candidate) >= 2:
+            regions = candidate
+            break
+    if not regions:
+        regions = best_regions
+
+    n = len(profile)
+    if n <= 0:
+        return regions
+
+    edge_margin = max(2, int(round(n * float(edge_exclusion_ratio))))
+    max_h = max(int(min_region_height), int(round(n * float(max_region_height_ratio))))
+
+    filtered = []
+    for s, e in regions:
+        h = int(e - s)
+        # Ignore edge-touching regions and overly thick regions (often cassette/frame background).
+        if s <= edge_margin:
+            continue
+        if e >= (n - edge_margin):
+            continue
+        if h > max_h:
+            continue
+        filtered.append((s, e))
+
+    # If too aggressive filtering removed faint valid lines, retry with looser guards once.
+    if len(filtered) < 2 and len(regions) >= 2:
+        relaxed_edge_margin = max(1, int(round(n * 0.01)))
+        relaxed_max_h = max(max_h, int(round(n * 0.45)))
+        relaxed = []
+        for s, e in regions:
+            h = int(e - s)
+            if s <= relaxed_edge_margin:
+                continue
+            if e >= (n - relaxed_edge_margin):
+                continue
+            if h > relaxed_max_h:
+                continue
+            relaxed.append((s, e))
+        if relaxed:
+            filtered = relaxed
+
+    return filtered
 
 
 def measure_line_darkness(gray_pil, regions):
@@ -569,7 +638,17 @@ def measure_line_darkness(gray_pil, regions):
     for start, end in regions:
         line_region = img[start:end, :]
         line_height = int(end - start)
-        line_mean = float(np.mean(line_region))
+        line_pixels = line_region.astype(float).ravel()
+        if line_pixels.size > 0:
+            sorted_pixels = np.sort(line_pixels)
+            trim_n = int(np.floor(sorted_pixels.size * 0.10))
+            if trim_n > 0 and (sorted_pixels.size - 2 * trim_n) >= 1:
+                trimmed_pixels = sorted_pixels[trim_n: sorted_pixels.size - trim_n]
+            else:
+                trimmed_pixels = sorted_pixels
+            line_mean = float(np.mean(trimmed_pixels))
+        else:
+            line_mean = float(np.mean(line_region))
         darkness = background - line_mean
         x_start = 0
         x_end = int(img.shape[1])
@@ -639,25 +718,57 @@ def analyze_library_image(gray_pil):
     cropped_np = np.array(cropped_for_vertical)
     if cropped_np.ndim == 3:
         cropped_np = np.mean(cropped_np, axis=2)
-    col_profile = np.mean(cropped_np, axis=0)
-    col_thr = min(float(np.mean(col_profile) * 0.90),
-                  float(np.mean(col_profile) - 0.3 * np.std(col_profile)))
-    dark_cols = col_profile < col_thr
+    col_profile_raw = np.mean(cropped_np, axis=0).astype(float)
 
-    v_regions = []
-    run_start = None
-    for i, is_dark in enumerate(dark_cols):
-        if is_dark and run_start is None:
-            run_start = i
-        elif (not is_dark) and run_start is not None:
-            run_end = i
-            if run_end - run_start >= 2:
-                v_regions.append((run_start, run_end))
-            run_start = None
-    if run_start is not None:
-        run_end = len(dark_cols)
-        if run_end - run_start >= 2:
-            v_regions.append((run_start, run_end))
+    # Smooth profile to reduce local noise and make weak guide lines detectable.
+    if len(col_profile_raw) >= 5:
+        kernel = np.array([1, 2, 3, 2, 1], dtype=float)
+        kernel /= np.sum(kernel)
+        col_profile = np.convolve(col_profile_raw, kernel, mode='same')
+    else:
+        col_profile = col_profile_raw
+
+    def _collect_regions(dark_mask, min_width):
+        regions_local = []
+        run_start_local = None
+        for idx, is_dark in enumerate(dark_mask):
+            if is_dark and run_start_local is None:
+                run_start_local = idx
+            elif (not is_dark) and run_start_local is not None:
+                run_end_local = idx
+                if run_end_local - run_start_local >= int(min_width):
+                    regions_local.append((run_start_local, run_end_local))
+                run_start_local = None
+        if run_start_local is not None:
+            run_end_local = len(dark_mask)
+            if run_end_local - run_start_local >= int(min_width):
+                regions_local.append((run_start_local, run_end_local))
+        return regions_local
+
+    mean_col = float(np.mean(col_profile))
+    std_col = float(np.std(col_profile))
+    primary_thr = min(float(mean_col * 0.90), float(mean_col - 0.3 * std_col))
+    raw_v_regions = _collect_regions(col_profile < primary_thr, min_width=2)
+
+    # Fallback: relax threshold and min width for low-contrast images.
+    if len(raw_v_regions) < 2:
+        relaxed_thr_1 = float(mean_col - 0.15 * std_col)
+        relaxed_thr_2 = float(np.percentile(col_profile, 45))
+        for thr in (relaxed_thr_1, relaxed_thr_2):
+            candidate_regions = _collect_regions(col_profile < thr, min_width=1)
+            if len(candidate_regions) >= 2:
+                raw_v_regions = candidate_regions
+                break
+
+    # Remove edge-touching regions to avoid detecting the outer cassette/image border.
+    edge_guard = max(2, int(round(cropped_for_vertical.width * 0.04)))
+    v_regions = [
+        (s, e) for s, e in raw_v_regions
+        if s > edge_guard and e < (cropped_for_vertical.width - edge_guard)
+    ]
+    # If all removed, keep original to avoid total detection failure.
+    if not v_regions:
+        v_regions = raw_v_regions
 
     vertical_overlay = cropped_for_vertical.convert('RGB')
     draw_v = ImageDraw.Draw(vertical_overlay)
@@ -671,8 +782,58 @@ def analyze_library_image(gray_pil):
     cropped_between = None
     vertical_crop_reason = 'ok'
     if len(v_regions) >= 2:
-        left_region = v_regions[0]
-        right_region = v_regions[-1]
+        centers = sorted([((s + e) / 2.0, (s, e)) for s, e in v_regions], key=lambda x: x[0])
+        cx = w_crop / 2.0
+        min_gap = max(8.0, w_crop * 0.08)
+        max_gap = max(min_gap + 2.0, w_crop * 0.42)
+        target_gap = w_crop * 0.24
+
+        best_pair = None
+        best_score = float('inf')
+        # Preferred: pair straddling center with reasonable gap.
+        for i in range(len(centers)):
+            c_l, r_l = centers[i]
+            if c_l >= cx:
+                continue
+            for j in range(i + 1, len(centers)):
+                c_r, r_r = centers[j]
+                if c_r <= cx:
+                    continue
+                gap = c_r - c_l
+                if gap < min_gap or gap > max_gap:
+                    continue
+                pair_center = (c_l + c_r) / 2.0
+                center_pen = abs(pair_center - cx) / max(1.0, w_crop)
+                gap_pen = abs(gap - target_gap) / max(1.0, w_crop)
+                score = 0.65 * gap_pen + 0.35 * center_pen
+                if score < best_score:
+                    best_score = score
+                    best_pair = (r_l, r_r)
+
+        # Fallback: choose center-straddling pair with minimum gap.
+        if best_pair is None:
+            best_gap = float('inf')
+            for i in range(len(centers)):
+                c_l, r_l = centers[i]
+                if c_l >= cx:
+                    continue
+                for j in range(i + 1, len(centers)):
+                    c_r, r_r = centers[j]
+                    if c_r <= cx:
+                        continue
+                    gap = c_r - c_l
+                    if gap < min_gap:
+                        continue
+                    if gap < best_gap:
+                        best_gap = gap
+                        best_pair = (r_l, r_r)
+
+        if best_pair is None:
+            left_region = v_regions[0]
+            right_region = v_regions[-1]
+        else:
+            left_region, right_region = best_pair
+
         pad_x = 3
         x_left = max(0, int(left_region[1]) - pad_x)
         x_right = min(w_crop, int(right_region[0]) + pad_x)
@@ -695,10 +856,12 @@ def analyze_library_image(gray_pil):
     result["vertical_crop_reason"] = vertical_crop_reason
 
     analysis_img = cropped_between if cropped_between is not None else cropped_for_vertical
-    trim_top = int(round(analysis_img.height * 0.18))
-    trim_bottom = int(round(analysis_img.height * 0.82))
-    if trim_bottom - trim_top >= 2:
-        analysis_img_trimmed = analysis_img.crop((0, trim_top, analysis_img.width, trim_bottom))
+    trim_top = int(round(analysis_img.height * 0.20))
+    trim_bottom = int(round(analysis_img.height * 0.80))
+    trim_left = int(round(analysis_img.width * 0.05))
+    trim_right = int(round(analysis_img.width * 0.95))
+    if (trim_bottom - trim_top >= 2) and (trim_right - trim_left >= 2):
+        analysis_img_trimmed = analysis_img.crop((trim_left, trim_top, trim_right, trim_bottom))
     else:
         analysis_img_trimmed = analysis_img
     result["analysis_img_trimmed"] = analysis_img_trimmed

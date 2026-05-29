@@ -28,6 +28,7 @@ def init_uploads_db():
                 dark_regions_path TEXT,
                 c REAL,
                 t REAL,
+                bg REAL,
                 ratio REAL,
                 ct_bg_sum REAL,
                 starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1)),
@@ -56,6 +57,7 @@ def init_uploads_db():
     _migrate_to_dark_scale_if_needed()
     _migrate_detail_metrics_alignment_v2_if_needed()
     _migrate_precision_v3_if_needed()
+    _migrate_bg_v4_if_needed()
 
 
 def _ensure_schema_updates():
@@ -65,6 +67,9 @@ def _ensure_schema_updates():
         col_names = {row["name"] for row in cols}
         if "ct_bg_sum" not in col_names:
             conn.execute("ALTER TABLE upload_records ADD COLUMN ct_bg_sum REAL")
+            conn.commit()
+        if "bg" not in col_names:
+            conn.execute("ALTER TABLE upload_records ADD COLUMN bg REAL")
             conn.commit()
         if "starred" not in col_names:
             conn.execute("ALTER TABLE upload_records ADD COLUMN starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1))")
@@ -309,6 +314,53 @@ def _migrate_precision_v3_if_needed():
         conn.close()
 
 
+def _migrate_bg_v4_if_needed():
+    conn = _get_conn()
+    try:
+        done_row = conn.execute(
+            "SELECT value FROM upload_meta WHERE key = 'bg_backfill_v4'"
+        ).fetchone()
+        if done_row and str(done_row['value']) == '1':
+            return
+
+        rows = conn.execute(
+            "SELECT id, bg, detail_json FROM upload_records"
+        ).fetchall()
+        for row in rows:
+            if row['bg'] is not None:
+                continue
+            detail_json = row['detail_json']
+            if not detail_json:
+                continue
+            try:
+                detail = json.loads(detail_json)
+            except Exception:
+                continue
+            if not isinstance(detail, dict):
+                continue
+            metrics = detail.get('metrics')
+            if not isinstance(metrics, dict):
+                continue
+            bg_val = metrics.get('bg')
+            if bg_val is None:
+                continue
+            conn.execute(
+                "UPDATE upload_records SET bg = ? WHERE id = ?",
+                (_r4(bg_val), row['id']),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO upload_meta (key, value)
+            VALUES ('bg_backfill_v4', '1')
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def upsert_upload_record(entry):
     conn = _get_conn()
     try:
@@ -316,9 +368,9 @@ def upsert_upload_record(entry):
             """
             INSERT INTO upload_records (
                 id, original_name, original_path, gray_path, cropped_name,
-                cropped_path, dark_regions_path, c, t, ratio, ct_bg_sum, starred, changed_field, changed_value, detail_json,
+                cropped_path, dark_regions_path, c, t, bg, ratio, ct_bg_sum, starred, changed_field, changed_value, detail_json,
                 date, time, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 original_name=excluded.original_name,
                 original_path=excluded.original_path,
@@ -328,6 +380,7 @@ def upsert_upload_record(entry):
                 dark_regions_path=excluded.dark_regions_path,
                 c=excluded.c,
                 t=excluded.t,
+                bg=excluded.bg,
                 ratio=excluded.ratio,
                 ct_bg_sum=excluded.ct_bg_sum,
                 starred=CASE
@@ -351,6 +404,7 @@ def upsert_upload_record(entry):
                 entry.get('dark_regions_path'),
                 _r4(entry.get('c')) if entry.get('c') is not None else None,
                 _r4(entry.get('t')) if entry.get('t') is not None else None,
+                _r4(entry.get('bg')) if entry.get('bg') is not None else None,
                 _r4(entry.get('ratio')) if entry.get('ratio') is not None else None,
                 _r4(entry.get('ct_bg_sum')) if entry.get('ct_bg_sum') is not None else None,
                 entry.get('starred'),
@@ -372,7 +426,7 @@ def list_insight_rows():
     try:
         rows = conn.execute(
             """
-            SELECT id, c, t, ratio, ct_bg_sum, date, time, starred
+            SELECT id, c, t, bg, ratio, ct_bg_sum, date, time, starred
             FROM upload_records
             ORDER BY date DESC, time DESC, id DESC
             """

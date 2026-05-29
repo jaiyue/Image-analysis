@@ -48,8 +48,8 @@ def render_insight_detail_page(detail_id):
         ('Original', images.get('original_path', detail_entry.get('original_path', ''))),
         ('Grayscale', images.get('gray_path', detail_entry.get('gray_path', ''))),
         ('Vertical Crop (Length Limited)', images.get('vertical_crop_path', '')),
-        ('Cropped', images.get('cropped_vertical_path', images.get('cropped_path', detail_entry.get('cropped_path', '')))),
-        ('Cropped (Top/Bottom 15% Removed)', images.get('cropped_trimmed_path', '')),
+        ('Cropped Vertical Overlay', images.get('cropped_vertical_path', images.get('cropped_path', detail_entry.get('cropped_path', '')))),
+        ('Cropped (Top/Bottom 20% Removed)', images.get('cropped_trimmed_path', '')),
         ('Re-Crop Overlay', images.get('recrop_path', '')),
     ]
     cols = st.columns(3)

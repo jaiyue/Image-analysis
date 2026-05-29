@@ -4,3 +4,4 @@ __pycache__/
 invoice-dashboard/
 .DS_Store
 uploads/
+test/
