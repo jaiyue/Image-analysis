@@ -2,85 +2,78 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS experiments (
     experiment_id INTEGER PRIMARY KEY,
-    experiment_name TEXT,
+    condition TEXT,
     experiment_date TEXT,
-    operator_name TEXT DEFAULT 'A.Li',
-    running_buffer_lot_id INTEGER,
+    experiment_title TEXT,
+    operator TEXT DEFAULT 'A.Li',
+    nitrocellulose_material TEXT,
     sample_pad_material TEXT,
-    sample_pad_pretreatment_lot_id INTEGER,
+    sample_pad_pretreatment_lot TEXT,
     conjugate_pad_material TEXT,
-    conjugate_pad_pretreatment_lot_id INTEGER,
-    glide_buffer_lot_id INTEGER,
-    test_line_concentration REAL,
-    reference_line_concentration REAL,
-    conjugate_batch_lot_id INTEGER,
-    conjugate_ratio REAL,
+    conjugate_pad_pretreatment_lot TEXT,
+    absorbent_pad_material TEXT,
+    running_buffer_lot TEXT,
+    glide_buffer_lot TEXT,
+    test_line_reagent TEXT,
+    test_line_concentration_mg_ml REAL,
+    reference_line_reagent TEXT,
+    reference_line_concentration_mg_ml REAL,
+    glide_volume_ul_per_cm REAL,
+    conjugate_batch_name TEXT,
+    gnp_lot TEXT,
     conjugate_loading_ul_per_cm REAL,
-    reconstitution_volume_ul REAL,
-    drying_condition TEXT,
+    drying_time TEXT,
     storage_condition TEXT,
-    notes TEXT,
-    FOREIGN KEY (running_buffer_lot_id) REFERENCES reagent_lots(lot_id)
-        ON UPDATE CASCADE
-        ON DELETE SET NULL,
-    FOREIGN KEY (glide_buffer_lot_id) REFERENCES reagent_lots(lot_id)
-        ON UPDATE CASCADE
-        ON DELETE SET NULL,
-    FOREIGN KEY (sample_pad_pretreatment_lot_id) REFERENCES reagent_lots(lot_id)
-        ON UPDATE CASCADE
-        ON DELETE SET NULL,
-    FOREIGN KEY (conjugate_pad_pretreatment_lot_id) REFERENCES reagent_lots(lot_id)
-        ON UPDATE CASCADE
-        ON DELETE SET NULL,
-    FOREIGN KEY (conjugate_batch_lot_id) REFERENCES reagent_lots(lot_id)
+    stability_timepoint TEXT,
+    experiment_notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strip_results (
+    strip_id TEXT PRIMARY KEY,
+    experiment_id INTEGER,
+    condition_value TEXT,
+    test_line_raw_intensity REAL,
+    reference_line_raw_intensity REAL,
+    test_line_corrected_intensity REAL,
+    reference_line_corrected_intensity REAL,
+    test_reference_ratio REAL,
+    reference_test_ratio REAL,
+    overall_membrane_background REAL,
+    valid_strip INTEGER,
+    failure_reason TEXT,
+    quality_flags TEXT,
+    image_filename TEXT,
+    sample_equivalent_mg_ml REAL,
+    dilution_equivalent REAL,
+    image_upload_datetime TEXT,
+    read_time_minutes REAL,
+    anomaly_flag INTEGER DEFAULT 0,
+    FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id)
         ON UPDATE CASCADE
         ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS strip_results (
-    strip_id INTEGER PRIMARY KEY,
-    experiment_id INTEGER NOT NULL,
-    image_filename TEXT,
-    image_path TEXT,
-    upload_time TEXT,
-    sample_concentration REAL,
-    concentration_unit TEXT,
-    replicate_number INTEGER,
-    condition_number TEXT,
-    strip_batch TEXT,
-    anomaly_notes TEXT,
-    user_verified INTEGER DEFAULT 0 CHECK (user_verified IN (0, 1)),
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id)
-        ON UPDATE CASCADE
-        ON DELETE RESTRICT
-);
-
-CREATE TABLE IF NOT EXISTS image_analysis_results (
-    analysis_id INTEGER PRIMARY KEY,
-    strip_id INTEGER NOT NULL,
-    analysis_version TEXT,
-    test_line_intensity REAL,
-    reference_line_intensity REAL,
-    t_c_ratio REAL,
-    detected_test_line INTEGER CHECK (detected_test_line IN (0, 1)),
-    detected_reference_line INTEGER CHECK (detected_reference_line IN (0, 1)),
-    strip_rotation_angle REAL,
-    strip_width_px INTEGER,
-    strip_height_px INTEGER,
-    roi_coordinates TEXT,
-    confidence_score REAL,
-    processing_time_ms REAL,
-    analysis_timestamp TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (strip_id) REFERENCES strip_results(strip_id)
-        ON UPDATE CASCADE
-        ON DELETE CASCADE
+CREATE TABLE IF NOT EXISTS conjugate_batch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conjugate_batch_name TEXT,
+    conjugate_ratio TEXT,
+    reconstitution_volume_ul REAL
 );
 
 CREATE TABLE IF NOT EXISTS reagent_lots (
-    lot_id INTEGER PRIMARY KEY,
-    lot_number TEXT NOT NULL UNIQUE,
+    lot_id TEXT PRIMARY KEY NOT NULL,
+    lot_name TEXT,
     reagent_type TEXT,
+    composition_details TEXT,
+    manufacture_date TEXT,
+    prepared_by TEXT DEFAULT 'A.Li',
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pad_material (
+    pad_id TEXT PRIMARY KEY NOT NULL,
+    pad_name TEXT,
+    type TEXT,
     composition_details TEXT,
     manufacture_date TEXT,
     prepared_by TEXT DEFAULT 'A.Li',
@@ -90,8 +83,11 @@ CREATE TABLE IF NOT EXISTS reagent_lots (
 CREATE INDEX IF NOT EXISTS idx_strip_results_experiment_id
     ON strip_results(experiment_id);
 
-CREATE INDEX IF NOT EXISTS idx_image_analysis_results_strip_id
-    ON image_analysis_results(strip_id);
+CREATE INDEX IF NOT EXISTS idx_conjugate_batch_name
+    ON conjugate_batch(conjugate_batch_name);
 
-CREATE INDEX IF NOT EXISTS idx_reagent_lots_lot_number
-    ON reagent_lots(lot_number);
+CREATE INDEX IF NOT EXISTS idx_reagent_lots_reagent_type
+    ON reagent_lots(reagent_type);
+
+CREATE INDEX IF NOT EXISTS idx_pad_material_type
+    ON pad_material(type);

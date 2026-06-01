@@ -426,7 +426,7 @@ def list_insight_rows():
     try:
         rows = conn.execute(
             """
-            SELECT id, c, t, bg, ratio, ct_bg_sum, date, time, starred
+            SELECT id, c, t, bg, ratio, ct_bg_sum, date, time, starred, changed_field
             FROM upload_records
             ORDER BY date DESC, time DESC, id DESC
             """

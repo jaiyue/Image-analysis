@@ -100,3 +100,9 @@ streamlit run app.py
 - `layout.py`, `theme.py`: UI shell/theme
 - `uploads/`: generated images
 - `uploads.db`: persisted upload/analysis records
+
+## Database Notes
+
+- In `Database` page, `pad_material table` supports batch insert for `pad_id`.
+- You can input multiple `pad_id` values separated by `,` or `，` (for example: `P001,P002,P003`).
+- On `Save`, each `pad_id` is inserted as a separate row, while other fields are reused.
