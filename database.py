@@ -668,6 +668,18 @@ def _delete_row_by_pk(conn, table_name, pk_payload):
     conn.commit()
 
 
+def _update_row_by_pk(conn, table_name, pk_payload, values_by_col):
+    if not pk_payload:
+        raise ValueError('Primary key not found for update.')
+    if not values_by_col:
+        return
+    set_sql = ', '.join([f'"{k}" = ?' for k in values_by_col.keys()])
+    where_sql = ' AND '.join([f'"{k}" = ?' for k in pk_payload.keys()])
+    query = f'UPDATE "{table_name}" SET {set_sql} WHERE {where_sql}'
+    conn.execute(query, list(values_by_col.values()) + list(pk_payload.values()))
+    conn.commit()
+
+
 def _convert_input(raw, col_type):
     text = (raw or '').strip()
     if text == '':
@@ -974,36 +986,110 @@ def render_database_page():
             return
 
         pk_names = [c['name'] for c in columns if c['is_pk']]
-        header_cols = st.columns([1] * len(visible_df.columns) + [0.6])
-        for idx, col_name in enumerate(visible_df.columns):
-            header_cols[idx].write(_column_display_name(selected_table, col_name))
-        header_cols[-1].write('remove')
+        display_to_real = {
+            _column_display_name(selected_table, col_name): col_name
+            for col_name in visible_df.columns
+        }
+        editor_df = visible_df.rename(columns={v: k for k, v in display_to_real.items()}).copy()
+        editor_df['remove'] = False
 
-        remove_label = _build_remove_button_label()
-        for row_idx, row in df.iterrows():
-            row_cols = st.columns([1] * len(visible_df.columns) + [0.6])
-            for col_idx, col_name in enumerate(visible_df.columns):
-                val = row[col_name]
-                row_cols[col_idx].write('' if pd.isna(val) else str(val))
+        edit_key = f'db_edit_mode_{selected_table}'
+        prev_edit_key = f'db_prev_edit_mode_{selected_table}'
+        cache_key = f'db_editor_cache_{selected_table}'
+        prev_edit_mode = bool(st.session_state.get(prev_edit_key, False))
+        edit_mode = st.toggle('Edit table', key=edit_key)
+        st.session_state[prev_edit_key] = bool(edit_mode)
 
-            pk_payload = {}
-            for pk_name in pk_names:
-                if pk_name in row.index:
-                    pk_payload[pk_name] = row[pk_name]
+        edited_df = st.data_editor(
+            editor_df,
+            hide_index=True,
+            width='stretch',
+            key=f'db_editor_{selected_table}_{"edit" if edit_mode else "view"}',
+            disabled=(not edit_mode),
+        )
 
-            with row_cols[-1]:
-                if st.button(
-                    remove_label,
-                    key=f"db_remove_{selected_table}_{row_idx}_{'_'.join([str(pk_payload.get(k, '')) for k in pk_names])}",
-                    width='content',
-                    type='tertiary',
-                ):
-                    try:
+        if edit_mode:
+            st.session_state[cache_key] = edited_df.copy()
+
+        if prev_edit_mode and not edit_mode:
+            try:
+                edited_df = st.session_state.get(cache_key)
+                if edited_df is None:
+                    st.info('No changes to save.')
+                    return
+                editable_col_meta = {c['name']: c for c in columns if c['name'] in visible_df.columns}
+                updated_rows = 0
+                deleted_rows = 0
+                for row_idx, edited_row in edited_df.iterrows():
+                    if bool(edited_row.get('remove', False)):
+                        pk_payload = {pk_name: df.iloc[row_idx][pk_name] for pk_name in pk_names if pk_name in df.columns}
                         _delete_row_by_pk(conn, selected_table, pk_payload)
-                        st.success('Row deleted.')
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f'Failed to delete row: {e}')
+                        deleted_rows += 1
+                        continue
+
+                    original_row = visible_df.iloc[row_idx]
+                    row_payload = {}
+                    missing = []
+                    convert_errors = []
+
+                    for display_name, raw_value in edited_row.items():
+                        if display_name == 'remove':
+                            continue
+                        real_name = display_to_real[display_name]
+                        col_meta = editable_col_meta[real_name]
+                        required = col_meta['not_null'] and not (col_meta['is_pk'] and 'INT' in col_meta['type'])
+                        if selected_table == 'reagent_lots' and real_name == 'lot_name':
+                            required = True
+                        if selected_table == 'pad_material' and real_name == 'pad_name':
+                            required = True
+                        if selected_table == 'conjugate_batch' and real_name == 'conjugate_batch_name':
+                            required = True
+
+                        raw_text = '' if pd.isna(raw_value) else str(raw_value)
+                        if required and raw_text.strip() == '':
+                            missing.append(_column_display_name(selected_table, real_name))
+                            continue
+
+                        try:
+                            converted = _convert_input(raw_text, col_meta['type'])
+                        except ValueError:
+                            convert_errors.append(f'{real_name} expects {col_meta["type"]}')
+                            continue
+                        row_payload[real_name] = converted
+
+                    if missing:
+                        raise ValueError(f'Row {row_idx + 1} missing required: {", ".join(missing)}')
+                    if convert_errors:
+                        raise ValueError(f'Row {row_idx + 1}: {"; ".join(convert_errors)}')
+
+                    has_changes = False
+                    for col_name, new_value in row_payload.items():
+                        old_value = original_row[col_name]
+                        if pd.isna(old_value):
+                            old_value = None
+                        if new_value != old_value:
+                            has_changes = True
+                            break
+                    if not has_changes:
+                        continue
+
+                    pk_payload = {pk_name: df.iloc[row_idx][pk_name] for pk_name in pk_names if pk_name in df.columns}
+                    _update_row_by_pk(conn, selected_table, pk_payload, row_payload)
+                    updated_rows += 1
+
+                if updated_rows == 0 and deleted_rows == 0:
+                    st.info('No changes to save.')
+                else:
+                    msg = []
+                    if updated_rows:
+                        msg.append(f'updated {updated_rows} row(s)')
+                    if deleted_rows:
+                        msg.append(f'deleted {deleted_rows} row(s)')
+                    st.success('Saved table changes: ' + ', '.join(msg) + '.')
+                    st.session_state.pop(cache_key, None)
+                    st.rerun()
+            except Exception as e:
+                st.error(f'Failed to save table changes: {e}')
     except Exception as e:
         st.error(f'Failed to load table data: {e}')
     finally:

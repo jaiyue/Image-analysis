@@ -49,7 +49,7 @@ In `experiment_data.db`:
 4. For each image, input changed value and click `Save`.
 5. App writes images + metrics to `experiment_data.db`.
 
-### Insights
+### Results
 
 1. Filter by ID, changed field, ratio range, date, star.
 2. Review table and open `Detail` per row.

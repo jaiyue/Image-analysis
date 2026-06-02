@@ -399,7 +399,7 @@ def estimate_missing_values(standard_rows):
 
 def render_standard_page():
 
-    st.title('Standard')
+    st.subheader('Standard')
 
     st.write(
         'Use `image.png` as the standard rule image.'

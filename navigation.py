@@ -16,8 +16,8 @@ PAGE_GROUPS = [
                 'description': 'Standard rule image preview and vertical dark-line detection.'
             },
             {
-                'name': 'Insights',
-                'label': 'Insights',
+                'name': 'Results',
+                'label': 'Results',
                 'description': 'A place for charts, summaries, and model outputs.'
             },
             {

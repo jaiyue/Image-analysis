@@ -171,8 +171,8 @@ def _render_table_editor(row_dict, edit_mode, key_prefix, width='stretch', hide_
 
 
 def render_insight_detail_page(detail_id):
-    st.subheader(f'Insight Detail - ID {detail_id}')
-    if st.button('Back to Insights', key='back_to_insights'):
+    st.subheader(f'Result Detail - ID {detail_id}')
+    if st.button('Back to Results', key='back_to_insights'):
         st.query_params.clear()
         st.rerun()
 

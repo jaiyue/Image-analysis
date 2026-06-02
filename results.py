@@ -4,7 +4,7 @@ import base64
 import sqlite3
 import io
 from pathlib import Path
-from insight_detail import render_insight_detail_page
+from result_detail import render_insight_detail_page
 from uploads_db import init_uploads_db, list_insight_rows, set_starred_status
 from database import DB_PATH
 
@@ -12,31 +12,6 @@ from database import DB_PATH
 ASSETS_DIR = Path(__file__).parent / 'assets'
 STAR_ICON_PATH = ASSETS_DIR / 'star.png'
 YELLOW_STAR_ICON_PATH = ASSETS_DIR / 'yellow_star.png'
-
-CHANGED_FIELD_NAMES = [
-    'sample_equivalent_mg_ml',
-    'nitrocellulose_material',
-    'cassette',
-    'sample_pad_material',
-    'sample_pad_pretreatment_lot',
-    'conjugate_pad_material',
-    'conjugate_pad_pretreatment_lot',
-    'absorbent_pad_material',
-    'running_buffer_lot',
-    'glide_buffer_lot',
-    'reconstitution_buffer_lot',
-    'test_line_reagent',
-    'test_line_concentration_mg_ml',
-    'reference_line_reagent',
-    'reference_line_concentration_mg_ml',
-    'glide_volume_ul_per_cm',
-    'conjugate_batch_name',
-    'gnp_lot',
-    'conjugate_loading_ul_per_cm',
-    'stability_timepoint',
-    'experiment_notes',
-]
-
 
 def _sort_by_id_desc(df):
     if df.empty or 'id' not in df.columns:
@@ -197,7 +172,7 @@ def render_insights_page():
         render_insight_detail_page(detail_id)
         return
 
-    st.subheader('Insights')
+    st.subheader('Results')
     init_uploads_db()
     st.markdown(
         """
@@ -231,7 +206,7 @@ def render_insights_page():
 
     table_df = pd.DataFrame(
         rows,
-        columns=['id', 'experiment_id', 'c', 't', 'bg', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred', 'changed_field', 'changed_value'],
+        columns=['id', 'experiment_id', 'c', 't', 'bg', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred', 'experiment_title', 'experiment_condition', 'changed_field', 'changed_value'],
     )
     if not table_df.empty:
         table_df = _sort_by_id_desc(table_df)
@@ -245,6 +220,10 @@ def render_insights_page():
         table_df['changed_value'] = None
     if 'experiment_id' not in table_df.columns:
         table_df['experiment_id'] = None
+    if 'experiment_title' not in table_df.columns:
+        table_df['experiment_title'] = None
+    if 'experiment_condition' not in table_df.columns:
+        table_df['experiment_condition'] = None
 
     if table_df.empty:
         st.info('No insight data yet. Process images in Library first.')
@@ -261,28 +240,45 @@ def render_insights_page():
 
     st.caption('Note: `ratio` is the normalized T/C metric; `(c-bg)+(t-bg)` helps distinguish strips with similar ratio but different absolute color intensity.')
 
-    filter_cols = st.columns([1.8, 2.1, 1.4, 1.4])
+    filter_cols = st.columns([1.6, 2.0, 2.0, 1.3, 1.4])
     id_keyword = filter_cols[0].text_input('Filter ID', value='', placeholder='e.g. 00001')
-    dynamic_changed = []
+    experiment_title_options = ['All']
     try:
-        dynamic_changed = sorted(
+        title_values = sorted(
             {
                 str(x).strip()
-                for x in table_df['changed_field'].tolist()
+                for x in table_df['experiment_title'].tolist()
                 if x is not None and str(x).strip() != ''
             }
         )
+        experiment_title_options.extend(title_values)
     except Exception:
-        dynamic_changed = []
-    changed_options = ['Full'] + list(dict.fromkeys(CHANGED_FIELD_NAMES + dynamic_changed))
+        pass
+    experiment_title_filter = filter_cols[1].selectbox(
+        'experiment title',
+        options=experiment_title_options,
+        index=0,
+    )
+    changed_options = ['Full']
+    try:
+        condition_values = sorted(
+            {
+                str(x).strip()
+                for x in table_df['experiment_condition'].tolist()
+                if x is not None and str(x).strip() != ''
+            }
+        )
+        changed_options.extend(condition_values)
+    except Exception:
+        pass
     changed_default = 'sample_equivalent_mg_ml' if 'sample_equivalent_mg_ml' in changed_options else 'Full'
-    changed_filter = filter_cols[1].selectbox(
+    changed_filter = filter_cols[2].selectbox(
         'changed',
         options=changed_options,
         index=changed_options.index(changed_default),
         format_func=lambda x: x if x == 'Full' else _display_label(x),
     )
-    ratio_bucket = filter_cols[2].selectbox('Ratio range', ['0~0.9', '0.9~1.1', '1.1+', 'Full'], index=3)
+    ratio_bucket = filter_cols[3].selectbox('Ratio range', ['0~0.9', '0.9~1.1', '1.1+', 'Full'], index=3)
 
     date_series = pd.to_datetime(table_df['date'], errors='coerce').dropna()
     if not date_series.empty:
@@ -292,7 +288,7 @@ def render_insights_page():
         default_min = None
         default_max = None
     if default_min and default_max:
-        date_range = filter_cols[3].date_input(
+        date_range = filter_cols[4].date_input(
             'Date range',
             value=(default_min, default_max),
         )
@@ -302,13 +298,15 @@ def render_insights_page():
     option_cols = st.columns([1.2, 1.4, 1.5, 2.1])
     star_only = option_cols[0].checkbox('Starred only', value=False)
     ratio_grouping = option_cols[1].checkbox('Group similar ratio', value=False)
-    experiment_grouping = option_cols[2].checkbox('Group by experiment', value=False)
+    experiment_grouping = option_cols[2].checkbox('Group by experiment', value=True)
 
     filtered_df = table_df.copy()
     if id_keyword.strip():
         filtered_df = filtered_df[filtered_df['id'].astype(str).str.contains(id_keyword.strip(), case=False, na=False)]
+    if experiment_title_filter != 'All':
+        filtered_df = filtered_df[filtered_df['experiment_title'].astype(str) == experiment_title_filter]
     if changed_filter != 'Full':
-        filtered_df = filtered_df[filtered_df['changed_field'].astype(str) == changed_filter]
+        filtered_df = filtered_df[filtered_df['experiment_condition'].astype(str) == changed_filter]
     if star_only:
         filtered_df = filtered_df[filtered_df['starred'].astype(bool)]
     if isinstance(date_range, tuple) and len(date_range) == 2:

@@ -382,11 +382,15 @@ def list_insight_rows():
                     THEN SUBSTR(sr.image_upload_datetime, 12, 8)
                 END AS time,
                 COALESCE(ur.starred, 0) AS starred,
+                exp.experiment_title AS experiment_title,
+                exp.condition AS experiment_condition,
                 sr.changed_field AS changed_field,
                 sr.condition_value AS changed_value
             FROM strip_results sr
             LEFT JOIN upload_records ur
               ON ur.id = sr.strip_id
+            LEFT JOIN experiments exp
+              ON exp.experiment_id = sr.experiment_id
             ORDER BY
                 CASE
                     WHEN sr.strip_id GLOB '[0-9]*' THEN CAST(sr.strip_id AS INTEGER)

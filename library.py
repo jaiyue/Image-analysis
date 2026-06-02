@@ -221,6 +221,47 @@ def _build_remove_button_label():
     return f"![remove](data:image/png;base64,{icon_b64})"
 
 
+@st.dialog('Confirm remove')
+def _confirm_delete_experiments_dialog(experiment_ids):
+    experiment_ids = [int(x) for x in experiment_ids if x is not None]
+    if not experiment_ids:
+        st.info('No experiment selected for removal.')
+        return
+
+    st.write('These experiment records will be deleted:')
+    st.write(', '.join([str(x) for x in experiment_ids]))
+
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button('Confirm', key='library_confirm_delete_experiments', width='stretch'):
+            deleted = 0
+            failed = []
+            for rid in experiment_ids:
+                try:
+                    _delete_experiment(rid)
+                    if st.session_state.get('library_selected_experiment_id') == rid:
+                        st.session_state['library_selected_experiment_id'] = None
+                    deleted += 1
+                except Exception as e:
+                    failed.append(str(e))
+            st.session_state['library_pending_remove_experiment_ids'] = []
+            st.session_state['library_existing_experiment_editor_nonce'] = (
+                int(st.session_state.get('library_existing_experiment_editor_nonce', 0)) + 1
+            )
+            if deleted > 0:
+                st.success(f'Deleted {deleted} experiment(s).')
+            if failed:
+                st.error('Failed to delete some rows: ' + '; '.join(failed))
+            st.rerun()
+    with cancel_col:
+        if st.button('Cancel', key='library_cancel_delete_experiments', width='stretch'):
+            st.session_state['library_pending_remove_experiment_ids'] = []
+            st.session_state['library_existing_experiment_editor_nonce'] = (
+                int(st.session_state.get('library_existing_experiment_editor_nonce', 0)) + 1
+            )
+            st.rerun()
+
+
 def _extract_image_datetime(pil_img):
     try:
         exif = pil_img.getexif()
@@ -732,12 +773,12 @@ def _load_conjugate_batch_names():
 
 
 def _render_experiment_selector():
-    st.subheader('Experiment')
     mode = st.radio(
         'Experiment mode',
         options=['New experiment', 'Exist experiment'],
         horizontal=True,
         key='library_experiment_mode',
+        label_visibility='collapsed',
     )
 
     if mode == 'New experiment':
@@ -1023,6 +1064,11 @@ def _render_experiment_selector():
         display_df.insert(0, 'remove', False)
         display_df.insert(0, 'select', display_df['experiment_id'] == selected_id)
 
+        editor_nonce = int(st.session_state.get('library_existing_experiment_editor_nonce', 0))
+        pending_remove_ids = st.session_state.get('library_pending_remove_experiment_ids', [])
+        if pending_remove_ids:
+            _confirm_delete_experiments_dialog(pending_remove_ids)
+
         col_config = {
             'select': st.column_config.CheckboxColumn('select', width='small'),
             'remove': st.column_config.CheckboxColumn('remove', width='small'),
@@ -1036,34 +1082,36 @@ def _render_experiment_selector():
             display_df,
             hide_index=True,
             width='stretch',
-            key='library_existing_experiment_editor',
+            key=f'library_existing_experiment_editor_{editor_nonce}',
             column_config=col_config,
             disabled=[c for c in display_df.columns if c not in ('select', 'remove')],
         )
 
         remove_rows = edited[edited['remove'] == True]  # noqa: E712
         if not remove_rows.empty:
-            deleted = 0
-            failed = []
-            for _, r in remove_rows.iterrows():
-                try:
-                    rid = int(r['experiment_id'])
-                    _delete_experiment(rid)
-                    if st.session_state.get('library_selected_experiment_id') == rid:
-                        st.session_state['library_selected_experiment_id'] = None
-                    deleted += 1
-                except Exception as e:
-                    failed.append(str(e))
-            if deleted > 0:
-                st.success(f'Deleted {deleted} experiment(s).')
-            if failed:
-                st.error('Failed to delete some rows: ' + '; '.join(failed))
-            st.rerun()
+            st.session_state['library_pending_remove_experiment_ids'] = [
+                int(r['experiment_id']) for _, r in remove_rows.iterrows()
+            ]
+            _confirm_delete_experiments_dialog(st.session_state['library_pending_remove_experiment_ids'])
 
         selected_rows = edited[edited['select'] == True]  # noqa: E712
-        if not selected_rows.empty:
+        prev_selected = st.session_state.get('library_selected_experiment_id')
+        if len(selected_rows) > 1:
+            selected_candidates = [int(x) for x in selected_rows['experiment_id'].tolist()]
+            if prev_selected in selected_candidates and len(selected_candidates) > 1:
+                fallback = [x for x in selected_candidates if x != prev_selected]
+                new_selected = fallback[0] if fallback else selected_candidates[0]
+            else:
+                new_selected = selected_candidates[0]
+            st.session_state['library_selected_experiment_id'] = new_selected
+            st.session_state['library_existing_experiment_editor_nonce'] = editor_nonce + 1
+            st.rerun()
+        elif len(selected_rows) == 1:
             new_selected = int(selected_rows.iloc[0]['experiment_id'])
             st.session_state['library_selected_experiment_id'] = new_selected
+            if prev_selected != new_selected:
+                st.session_state['library_existing_experiment_editor_nonce'] = editor_nonce + 1
+                st.rerun()
 
             exp_row_dict = None
             try:
@@ -1082,11 +1130,14 @@ def _render_experiment_selector():
 
             st.caption(f'Selected experiment id: {new_selected}')
         else:
-            st.caption('No experiment selected.')
+            if prev_selected is not None:
+                st.caption(f'Selected experiment id: {prev_selected}')
+            else:
+                st.caption('No experiment selected.')
 
 
 def render_library_page():
-    st.title('Library')
+    st.subheader('Library')
     st.write(
         'Upload images or CSV datasets. Images show as thumbnails; CSVs show a preview.')
     st.markdown(
