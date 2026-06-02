@@ -1,5 +1,6 @@
 import streamlit as st
 from pathlib import Path
+import sqlite3
 
 from layout import render_dashboard_header, render_sidebar_brand
 from navigation import PAGE_BY_LABEL, render_sidebar_navigation
@@ -44,10 +45,23 @@ def clear_all_content():
         if ref_path.exists():
             ref_path.unlink(missing_ok=True)
 
-    for db_name in ('uploads.db', 'human_review.db'):
+    for db_name in ('human_review.db',):
         db_path = project_root / db_name
         if db_path.exists():
             db_path.unlink(missing_ok=True)
+
+    experiment_db_path = project_root / 'experiment_data.db'
+    if experiment_db_path.exists():
+        conn = sqlite3.connect(experiment_db_path)
+        try:
+            conn.execute('DELETE FROM strip_results')
+            conn.execute('DELETE FROM upload_records')
+            conn.execute('DELETE FROM upload_meta')
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
 
     preserved_selected = st.session_state.get('selected_page_label', 'Library')
     st.session_state.clear()

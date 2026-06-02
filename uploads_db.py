@@ -4,11 +4,22 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).parent
-UPLOADS_DB_PATH = PROJECT_ROOT / 'uploads.db'
+EXPERIMENT_DB_PATH = PROJECT_ROOT / 'experiment_data.db'
+UPLOAD_RECORD_BASE_COLUMNS = [
+    'id',
+    'original_name',
+    'original_path',
+    'gray_path',
+    'cropped_name',
+    'cropped_path',
+    'dark_regions_path',
+    'starred',
+    'detail_json',
+]
 
 
 def _get_conn():
-    conn = sqlite3.connect(UPLOADS_DB_PATH)
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -26,18 +37,8 @@ def init_uploads_db():
                 cropped_name TEXT,
                 cropped_path TEXT,
                 dark_regions_path TEXT,
-                c REAL,
-                t REAL,
-                bg REAL,
-                ratio REAL,
-                ct_bg_sum REAL,
                 starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1)),
-                changed_field TEXT,
-                changed_value TEXT,
-                detail_json TEXT,
-                date TEXT,
-                time TEXT,
-                timestamp TEXT
+                detail_json TEXT
             )
             """
         )
@@ -52,6 +53,7 @@ def init_uploads_db():
         conn.commit()
     finally:
         conn.close()
+    _migrate_upload_records_schema_v2()
     _ensure_schema_updates()
     _migrate_meta_json_if_needed()
     _migrate_to_dark_scale_if_needed()
@@ -60,25 +62,172 @@ def init_uploads_db():
     _migrate_bg_v4_if_needed()
 
 
+def _migrate_upload_records_schema_v2():
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        cols = conn.execute('PRAGMA table_info("upload_records")').fetchall()
+        col_names = [row['name'] for row in cols]
+        legacy_data_cols = {
+            'c', 't', 'bg', 'ratio', 'ct_bg_sum',
+            'changed_field', 'changed_value', 'date', 'time', 'timestamp',
+        }
+        if not any(name in legacy_data_cols for name in col_names):
+            return
+
+        from database import ensure_core_schema
+
+        ensure_core_schema(conn)
+        rows = conn.execute('SELECT * FROM upload_records').fetchall()
+        for row in rows:
+            data = dict(row)
+            strip_id = str(data.get('id') or '').strip()
+            if strip_id == '':
+                continue
+
+            timestamp = data.get('timestamp')
+            if not timestamp:
+                raw_date = data.get('date')
+                raw_time = data.get('time')
+                timestamp = f'{raw_date}T{raw_time}' if raw_date and raw_time else None
+
+            reference_raw = data.get('c')
+            test_raw = data.get('t')
+            bg = data.get('bg')
+            ratio = data.get('ratio')
+            ct_bg_sum = data.get('ct_bg_sum')
+            reference_corrected = (reference_raw - bg) if (reference_raw is not None and bg is not None) else None
+            test_corrected = (test_raw - bg) if (test_raw is not None and bg is not None) else None
+            reference_test_ratio = None
+            if ratio is not None:
+                try:
+                    ratio_val = float(ratio)
+                    if abs(ratio_val) > 1e-12:
+                        reference_test_ratio = 1.0 / ratio_val
+                except Exception:
+                    reference_test_ratio = None
+
+            detail = {}
+            try:
+                detail = json.loads(data.get('detail_json') or '{}')
+            except Exception:
+                detail = {}
+            vertical_crop_reason = detail.get('vertical_crop_reason') if isinstance(detail, dict) else None
+            valid_strip = 1 if (test_corrected is not None and reference_corrected is not None) else 0
+            failure_reason = None
+            if not valid_strip:
+                failure_reason = vertical_crop_reason or 'line_detection_incomplete'
+            elif vertical_crop_reason and vertical_crop_reason not in ('ok', 'single_line_cropped'):
+                failure_reason = vertical_crop_reason
+
+            quality_flags = []
+            if vertical_crop_reason and vertical_crop_reason != 'ok':
+                quality_flags.append(vertical_crop_reason)
+            if bg is None:
+                quality_flags.append('missing_background')
+            if ratio is None:
+                quality_flags.append('missing_test_reference_ratio')
+            quality_flags_text = ','.join(quality_flags) if quality_flags else None
+
+            conn.execute(
+                """
+                INSERT INTO strip_results (
+                    strip_id,
+                    changed_field,
+                    condition_value,
+                    test_line_raw_intensity,
+                    reference_line_raw_intensity,
+                    test_line_corrected_intensity,
+                    reference_line_corrected_intensity,
+                    test_reference_ratio,
+                    reference_test_ratio,
+                    overall_membrane_background,
+                    ct_bg_sum,
+                    valid_strip,
+                    failure_reason,
+                    quality_flags,
+                    image_filename,
+                    image_upload_datetime
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(strip_id) DO UPDATE SET
+                    changed_field = COALESCE(excluded.changed_field, strip_results.changed_field),
+                    condition_value = COALESCE(excluded.condition_value, strip_results.condition_value),
+                    test_line_raw_intensity = COALESCE(strip_results.test_line_raw_intensity, excluded.test_line_raw_intensity),
+                    reference_line_raw_intensity = COALESCE(strip_results.reference_line_raw_intensity, excluded.reference_line_raw_intensity),
+                    test_line_corrected_intensity = COALESCE(strip_results.test_line_corrected_intensity, excluded.test_line_corrected_intensity),
+                    reference_line_corrected_intensity = COALESCE(strip_results.reference_line_corrected_intensity, excluded.reference_line_corrected_intensity),
+                    test_reference_ratio = COALESCE(strip_results.test_reference_ratio, excluded.test_reference_ratio),
+                    reference_test_ratio = COALESCE(strip_results.reference_test_ratio, excluded.reference_test_ratio),
+                    overall_membrane_background = COALESCE(strip_results.overall_membrane_background, excluded.overall_membrane_background),
+                    ct_bg_sum = COALESCE(strip_results.ct_bg_sum, excluded.ct_bg_sum),
+                    valid_strip = COALESCE(strip_results.valid_strip, excluded.valid_strip),
+                    failure_reason = COALESCE(strip_results.failure_reason, excluded.failure_reason),
+                    quality_flags = COALESCE(strip_results.quality_flags, excluded.quality_flags),
+                    image_filename = COALESCE(strip_results.image_filename, excluded.image_filename),
+                    image_upload_datetime = COALESCE(strip_results.image_upload_datetime, excluded.image_upload_datetime)
+                """,
+                (
+                    strip_id,
+                    data.get('changed_field'),
+                    data.get('changed_value'),
+                    test_raw,
+                    reference_raw,
+                    test_corrected,
+                    reference_corrected,
+                    ratio,
+                    reference_test_ratio,
+                    bg,
+                    ct_bg_sum,
+                    valid_strip,
+                    failure_reason,
+                    quality_flags_text,
+                    data.get('original_name'),
+                    timestamp,
+                ),
+            )
+
+        conn.execute('ALTER TABLE upload_records RENAME TO upload_records_old')
+        conn.execute(
+            """
+            CREATE TABLE upload_records (
+                id TEXT PRIMARY KEY,
+                original_name TEXT,
+                original_path TEXT,
+                gray_path TEXT,
+                cropped_name TEXT,
+                cropped_path TEXT,
+                dark_regions_path TEXT,
+                starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1)),
+                detail_json TEXT
+            )
+            """
+        )
+        common = [name for name in UPLOAD_RECORD_BASE_COLUMNS if name in col_names]
+        if common:
+            cols_sql = ', '.join([f'"{name}"' for name in common])
+            conn.execute(
+                f'''
+                INSERT INTO upload_records ({cols_sql})
+                SELECT {cols_sql}
+                FROM upload_records_old
+                '''
+            )
+        conn.execute('DROP TABLE upload_records_old')
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _ensure_schema_updates():
     conn = _get_conn()
     try:
         cols = conn.execute("PRAGMA table_info(upload_records)").fetchall()
         col_names = {row["name"] for row in cols}
-        if "ct_bg_sum" not in col_names:
-            conn.execute("ALTER TABLE upload_records ADD COLUMN ct_bg_sum REAL")
-            conn.commit()
-        if "bg" not in col_names:
-            conn.execute("ALTER TABLE upload_records ADD COLUMN bg REAL")
-            conn.commit()
         if "starred" not in col_names:
             conn.execute("ALTER TABLE upload_records ADD COLUMN starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1))")
             conn.commit()
-        if "changed_field" not in col_names:
-            conn.execute("ALTER TABLE upload_records ADD COLUMN changed_field TEXT")
-            conn.commit()
-        if "changed_value" not in col_names:
-            conn.execute("ALTER TABLE upload_records ADD COLUMN changed_value TEXT")
+        if "detail_json" not in col_names:
+            conn.execute("ALTER TABLE upload_records ADD COLUMN detail_json TEXT")
             conn.commit()
     finally:
         conn.close()
@@ -160,205 +309,19 @@ def _transform_detail_json_to_dark_scale(detail_json):
 
 
 def _migrate_to_dark_scale_if_needed():
-    conn = _get_conn()
-    try:
-        done_row = conn.execute(
-            "SELECT value FROM upload_meta WHERE key = 'dark_scale_migrated_v1'"
-        ).fetchone()
-        if done_row and str(done_row['value']) == '1':
-            return
-
-        rows = conn.execute(
-            "SELECT id, c, t, ct_bg_sum, detail_json FROM upload_records"
-        ).fetchall()
-        for row in rows:
-            c_old = row['c']
-            t_old = row['t']
-            c_new = _r4(_to_dark_value(c_old)) if c_old is not None else None
-            t_new = _r4(_to_dark_value(t_old)) if t_old is not None else None
-
-            ct_bg_sum_new = row['ct_bg_sum']
-            if ct_bg_sum_new is not None:
-                ct_bg_sum_new = _r4(float(-1.0 * float(ct_bg_sum_new)))
-
-            detail_json_new = _transform_detail_json_to_dark_scale(row['detail_json'])
-
-            conn.execute(
-                """
-                UPDATE upload_records
-                SET c = ?, t = ?, ct_bg_sum = ?, detail_json = ?
-                WHERE id = ?
-                """,
-                (c_new, t_new, ct_bg_sum_new, detail_json_new, row['id']),
-            )
-
-        conn.execute(
-            """
-            INSERT INTO upload_meta (key, value)
-            VALUES ('dark_scale_migrated_v1', '1')
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    return
 
 
 def _migrate_detail_metrics_alignment_v2_if_needed():
-    conn = _get_conn()
-    try:
-        done_row = conn.execute(
-            "SELECT value FROM upload_meta WHERE key = 'detail_metrics_alignment_v2'"
-        ).fetchone()
-        if done_row and str(done_row['value']) == '1':
-            return
-
-        rows = conn.execute(
-            "SELECT id, c, t, ratio, ct_bg_sum, detail_json FROM upload_records"
-        ).fetchall()
-        for row in rows:
-            detail_json = row['detail_json']
-            if not detail_json:
-                continue
-            try:
-                detail = json.loads(detail_json)
-            except Exception:
-                continue
-            if not isinstance(detail, dict):
-                continue
-
-            metrics = detail.get('metrics')
-            if not isinstance(metrics, dict):
-                continue
-
-            metrics['c'] = _r4(row['c']) if row['c'] is not None else None
-            metrics['t'] = _r4(row['t']) if row['t'] is not None else None
-            metrics['ratio'] = _r4(row['ratio']) if row['ratio'] is not None else None
-            metrics['ct_bg_sum'] = _r4(row['ct_bg_sum']) if row['ct_bg_sum'] is not None else None
-            detail['metrics'] = metrics
-
-            conn.execute(
-                "UPDATE upload_records SET detail_json = ? WHERE id = ?",
-                (json.dumps(detail, ensure_ascii=False), row['id']),
-            )
-
-        conn.execute(
-            """
-            INSERT INTO upload_meta (key, value)
-            VALUES ('detail_metrics_alignment_v2', '1')
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    return
 
 
 def _migrate_precision_v3_if_needed():
-    conn = _get_conn()
-    try:
-        done_row = conn.execute(
-            "SELECT value FROM upload_meta WHERE key = 'precision_4dp_v3'"
-        ).fetchone()
-        if done_row and str(done_row['value']) == '1':
-            return
-
-        rows = conn.execute(
-            "SELECT id, c, t, ratio, ct_bg_sum, detail_json FROM upload_records"
-        ).fetchall()
-        for row in rows:
-            c_new = _r4(row['c']) if row['c'] is not None else None
-            t_new = _r4(row['t']) if row['t'] is not None else None
-            ratio_new = _r4(row['ratio']) if row['ratio'] is not None else None
-            ct_bg_sum_new = _r4(row['ct_bg_sum']) if row['ct_bg_sum'] is not None else None
-
-            detail_json_new = row['detail_json']
-            if detail_json_new:
-                try:
-                    detail = json.loads(detail_json_new)
-                    if isinstance(detail, dict):
-                        metrics = detail.get('metrics')
-                        if isinstance(metrics, dict):
-                            for k in ('c', 't', 'bg', 'ratio', 'ct_bg_sum'):
-                                if metrics.get(k) is not None:
-                                    metrics[k] = _r4(metrics[k])
-                            detail['metrics'] = metrics
-                        table_rows = detail.get('table_rows')
-                        if isinstance(table_rows, list):
-                            for tr in table_rows:
-                                if isinstance(tr, dict) and tr.get('gray_mean') is not None:
-                                    tr['gray_mean'] = _r4(tr['gray_mean'])
-                            detail['table_rows'] = table_rows
-                        detail_json_new = json.dumps(detail, ensure_ascii=False)
-                except Exception:
-                    pass
-
-            conn.execute(
-                """
-                UPDATE upload_records
-                SET c = ?, t = ?, ratio = ?, ct_bg_sum = ?, detail_json = ?
-                WHERE id = ?
-                """,
-                (c_new, t_new, ratio_new, ct_bg_sum_new, detail_json_new, row['id']),
-            )
-
-        conn.execute(
-            """
-            INSERT INTO upload_meta (key, value)
-            VALUES ('precision_4dp_v3', '1')
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    return
 
 
 def _migrate_bg_v4_if_needed():
-    conn = _get_conn()
-    try:
-        done_row = conn.execute(
-            "SELECT value FROM upload_meta WHERE key = 'bg_backfill_v4'"
-        ).fetchone()
-        if done_row and str(done_row['value']) == '1':
-            return
-
-        rows = conn.execute(
-            "SELECT id, bg, detail_json FROM upload_records"
-        ).fetchall()
-        for row in rows:
-            if row['bg'] is not None:
-                continue
-            detail_json = row['detail_json']
-            if not detail_json:
-                continue
-            try:
-                detail = json.loads(detail_json)
-            except Exception:
-                continue
-            if not isinstance(detail, dict):
-                continue
-            metrics = detail.get('metrics')
-            if not isinstance(metrics, dict):
-                continue
-            bg_val = metrics.get('bg')
-            if bg_val is None:
-                continue
-            conn.execute(
-                "UPDATE upload_records SET bg = ? WHERE id = ?",
-                (_r4(bg_val), row['id']),
-            )
-
-        conn.execute(
-            """
-            INSERT INTO upload_meta (key, value)
-            VALUES ('bg_backfill_v4', '1')
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    return
 
 
 def upsert_upload_record(entry):
@@ -368,9 +331,8 @@ def upsert_upload_record(entry):
             """
             INSERT INTO upload_records (
                 id, original_name, original_path, gray_path, cropped_name,
-                cropped_path, dark_regions_path, c, t, bg, ratio, ct_bg_sum, starred, changed_field, changed_value, detail_json,
-                date, time, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?, ?, ?, ?, ?, ?)
+                cropped_path, dark_regions_path, starred, detail_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), ?)
             ON CONFLICT(id) DO UPDATE SET
                 original_name=excluded.original_name,
                 original_path=excluded.original_path,
@@ -378,21 +340,11 @@ def upsert_upload_record(entry):
                 cropped_name=excluded.cropped_name,
                 cropped_path=excluded.cropped_path,
                 dark_regions_path=excluded.dark_regions_path,
-                c=excluded.c,
-                t=excluded.t,
-                bg=excluded.bg,
-                ratio=excluded.ratio,
-                ct_bg_sum=excluded.ct_bg_sum,
                 starred=CASE
                     WHEN excluded.starred IS NULL THEN upload_records.starred
                     ELSE excluded.starred
                 END,
-                changed_field=excluded.changed_field,
-                changed_value=excluded.changed_value,
-                detail_json=excluded.detail_json,
-                date=excluded.date,
-                time=excluded.time,
-                timestamp=excluded.timestamp
+                detail_json=excluded.detail_json
             """,
             (
                 str(entry.get('id', '')),
@@ -402,18 +354,8 @@ def upsert_upload_record(entry):
                 entry.get('cropped_name'),
                 entry.get('cropped_path'),
                 entry.get('dark_regions_path'),
-                _r4(entry.get('c')) if entry.get('c') is not None else None,
-                _r4(entry.get('t')) if entry.get('t') is not None else None,
-                _r4(entry.get('bg')) if entry.get('bg') is not None else None,
-                _r4(entry.get('ratio')) if entry.get('ratio') is not None else None,
-                _r4(entry.get('ct_bg_sum')) if entry.get('ct_bg_sum') is not None else None,
                 entry.get('starred'),
-                entry.get('changed_field'),
-                entry.get('changed_value'),
                 json.dumps(entry.get('detail', {}), ensure_ascii=False),
-                entry.get('date'),
-                entry.get('time'),
-                entry.get('timestamp'),
             ),
         )
         conn.commit()
@@ -426,9 +368,31 @@ def list_insight_rows():
     try:
         rows = conn.execute(
             """
-            SELECT id, c, t, bg, ratio, ct_bg_sum, date, time, starred, changed_field
-            FROM upload_records
-            ORDER BY date DESC, time DESC, id DESC
+            SELECT
+                sr.strip_id AS id,
+                sr.experiment_id AS experiment_id,
+                sr.reference_line_raw_intensity AS c,
+                sr.test_line_raw_intensity AS t,
+                sr.overall_membrane_background AS bg,
+                sr.test_reference_ratio AS ratio,
+                sr.ct_bg_sum AS ct_bg_sum,
+                CASE WHEN sr.image_upload_datetime IS NOT NULL THEN SUBSTR(sr.image_upload_datetime, 1, 10) END AS date,
+                CASE
+                    WHEN sr.image_upload_datetime IS NOT NULL AND LENGTH(sr.image_upload_datetime) >= 19
+                    THEN SUBSTR(sr.image_upload_datetime, 12, 8)
+                END AS time,
+                COALESCE(ur.starred, 0) AS starred,
+                sr.changed_field AS changed_field,
+                sr.condition_value AS changed_value
+            FROM strip_results sr
+            LEFT JOIN upload_records ur
+              ON ur.id = sr.strip_id
+            ORDER BY
+                CASE
+                    WHEN sr.strip_id GLOB '[0-9]*' THEN CAST(sr.strip_id AS INTEGER)
+                    ELSE NULL
+                END DESC,
+                sr.strip_id DESC
             """
         ).fetchall()
         return [dict(r) for r in rows]

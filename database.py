@@ -8,7 +8,6 @@ import streamlit as st
 
 
 DB_PATH = Path(__file__).parent / 'experiment_data.db'
-UPLOADS_DB_PATH = Path(__file__).parent / 'uploads.db'
 REMOVE_ICON_PATH = Path(__file__).parent / 'assets' / 'remove.png'
 SCHEMA_PATH = Path(__file__).parent / 'experiment_schema.sql'
 
@@ -17,6 +16,7 @@ REAGENT_TYPE_OPTIONS = [
     'conjugate_pad_pretreatment_lot',
     'running_buffer_lot',
     'glide_buffer_lot',
+    'reconstitution_buffer_lot',
     'gnp_lot',
 ]
 
@@ -29,6 +29,22 @@ PAD_TYPE_OPTIONS = [
     'conjugate_pad_material',
     'absorbent_pad_material',
 ]
+
+
+def _table_display_name(table_name):
+    if table_name == 'reagent_lots':
+        return 'reagent lots'
+    if table_name == 'pad_material':
+        return 'material'
+    if table_name == 'conjugate_batch':
+        return 'conjugate batch'
+    return _display_label(table_name)
+
+
+def _column_display_name(table_name, col_name):
+    if table_name == 'pad_material' and col_name == 'pad_name':
+        return 'name'
+    return _display_label(col_name)
 
 AUTO_GENERATED_FIELDS = {
     'experiments': {'experiment_id'},
@@ -220,13 +236,30 @@ def _rebuild_experiments_with_schema_order(conn):
 
     existing_cols = conn.execute('PRAGMA table_info("experiments")').fetchall()
     existing_names = [r[1] for r in existing_cols]
-    if existing_names == desired_names:
+    extra_names = [n for n in existing_names if n not in desired_names]
+    target_names = desired_names + extra_names
+    if existing_names == target_names:
         return
 
-    col_sql = [f'{name} {typ}' for name, typ in desired_cols]
+    col_defs = list(desired_cols)
+    existing_map = {r[1]: r for r in existing_cols}
+    for name in extra_names:
+        r = existing_map.get(name)
+        if not r:
+            continue
+        parts = [r[2] or 'TEXT']
+        if int(r[3]):
+            parts.append('NOT NULL')
+        if r[4] is not None:
+            parts.append(f'DEFAULT {r[4]}')
+        if int(r[5]):
+            parts.append('PRIMARY KEY')
+        col_defs.append((name, ' '.join(parts)))
+
+    col_sql = [f'{name} {typ}' for name, typ in col_defs]
     conn.execute('CREATE TABLE experiments_new (\n    ' + ',\n    '.join(col_sql) + '\n)')
 
-    common = [n for n in desired_names if n in existing_names]
+    common = [n for n in target_names if n in existing_names]
     if common:
         cols_join = ', '.join([f'"{c}"' for c in common])
         conn.execute(
@@ -366,6 +399,15 @@ def ensure_core_schema(conn):
 
     _ensure_table_columns_additive(conn, 'experiments', _schema_columns('experiments'))
     _rebuild_experiments_with_schema_order(conn)
+    if _table_exists(conn, 'experiments'):
+        conn.execute(
+            """
+            UPDATE experiments
+            SET conjugate_pad_material = 'NGF66'
+            WHERE conjugate_pad_material IS NULL
+               OR TRIM(CAST(conjugate_pad_material AS TEXT)) = ''
+            """
+        )
 
     if _table_exists(conn, 'strip_results'):
         strip_col_names = {r[1] for r in conn.execute('PRAGMA table_info("strip_results")').fetchall()}
@@ -421,6 +463,18 @@ def ensure_core_schema(conn):
         'conjugate_batch',
         _schema_columns('conjugate_batch'),
         _schema_foreign_keys('conjugate_batch'),
+    )
+    _ensure_table_schema(
+        conn,
+        'upload_records',
+        _schema_columns('upload_records'),
+        _schema_foreign_keys('upload_records'),
+    )
+    _ensure_table_schema(
+        conn,
+        'upload_meta',
+        _schema_columns('upload_meta'),
+        _schema_foreign_keys('upload_meta'),
     )
 
     if _table_exists(conn, 'image_analysis_results'):
@@ -483,190 +537,47 @@ def _get_latest_experiment_id(conn):
 
 
 def _sync_from_uploads(conn, default_experiment_id=None):
-    if not UPLOADS_DB_PATH.exists():
+    if not _table_exists(conn, 'upload_records'):
         return
 
-    upload_conn = sqlite3.connect(UPLOADS_DB_PATH)
-    upload_conn.row_factory = sqlite3.Row
-    try:
-        # Defensive cleanup for legacy orphan references (e.g. experiment deleted
-        # from a connection with foreign_keys disabled).
+    # Keep filenames aligned for records that already exist in strip_results.
+    rows = conn.execute(
+        """
+        SELECT id, original_name
+        FROM upload_records
+        """
+    ).fetchall()
+
+    if not rows:
+        return
+
+    # Defensive cleanup for legacy orphan references (e.g. experiment deleted
+    # from a connection with foreign_keys disabled).
+    conn.execute(
+        """
+        UPDATE strip_results
+        SET experiment_id = NULL
+        WHERE experiment_id IS NOT NULL
+          AND experiment_id NOT IN (
+            SELECT experiment_id FROM experiments
+          )
+        """
+    )
+
+    for row in rows:
         conn.execute(
             """
             UPDATE strip_results
-            SET experiment_id = NULL
-            WHERE experiment_id IS NOT NULL
-              AND experiment_id NOT IN (
-                SELECT experiment_id FROM experiments
-              )
-            """
+            SET image_filename = COALESCE(image_filename, ?)
+            WHERE strip_id = ?
+            """,
+            (
+                row[1],
+                str(row[0]),
+            ),
         )
 
-        rows = upload_conn.execute(
-            """
-            SELECT id, original_name, date, time, timestamp, c, t, bg, ratio, changed_field, changed_value, detail_json
-            FROM upload_records
-            """
-        ).fetchall()
-
-        latest_experiment_id = _get_latest_experiment_id(conn)
-        for row in rows:
-            strip_id = str(row['id'])
-            existing_strip = conn.execute(
-                'SELECT experiment_id FROM strip_results WHERE strip_id = ?',
-                (strip_id,),
-            ).fetchone()
-            if existing_strip and existing_strip[0] is not None:
-                experiment_id = existing_strip[0]
-            elif default_experiment_id is not None:
-                experiment_id = default_experiment_id
-            else:
-                experiment_id = latest_experiment_id
-
-            if experiment_id is not None:
-                valid_exp = conn.execute(
-                    'SELECT 1 FROM experiments WHERE experiment_id = ? LIMIT 1',
-                    (experiment_id,),
-                ).fetchone()
-                if not valid_exp:
-                    experiment_id = latest_experiment_id
-                    if experiment_id is not None:
-                        valid_latest = conn.execute(
-                            'SELECT 1 FROM experiments WHERE experiment_id = ? LIMIT 1',
-                            (experiment_id,),
-                        ).fetchone()
-                        if not valid_latest:
-                            experiment_id = None
-
-            if experiment_id is not None and row['changed_field']:
-                conn.execute(
-                    """
-                    UPDATE experiments
-                    SET condition = COALESCE(NULLIF(TRIM(condition), ''), ?)
-                    WHERE experiment_id = ?
-                    """,
-                    (str(row['changed_field']), experiment_id),
-                )
-
-            timestamp = row['timestamp']
-            if not timestamp:
-                d = row['date']
-                t = row['time']
-                timestamp = f'{d}T{t}' if d and t else None
-
-            conn.execute(
-                """
-                INSERT INTO strip_results (
-                    strip_id, experiment_id, image_filename,
-                    sample_equivalent_mg_ml, dilution_equivalent,
-                    image_upload_datetime, read_time_minutes, anomaly_flag, condition_value
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(strip_id) DO UPDATE SET
-                    image_filename = COALESCE(strip_results.image_filename, excluded.image_filename),
-                    image_upload_datetime = COALESCE(strip_results.image_upload_datetime, excluded.image_upload_datetime),
-                    condition_value = COALESCE(excluded.condition_value, strip_results.condition_value),
-                    sample_equivalent_mg_ml = COALESCE(strip_results.sample_equivalent_mg_ml, excluded.sample_equivalent_mg_ml),
-                    dilution_equivalent = COALESCE(strip_results.dilution_equivalent, excluded.dilution_equivalent),
-                    read_time_minutes = COALESCE(strip_results.read_time_minutes, excluded.read_time_minutes),
-                    anomaly_flag = COALESCE(strip_results.anomaly_flag, excluded.anomaly_flag),
-                    experiment_id = COALESCE(strip_results.experiment_id, excluded.experiment_id)
-                """,
-                (
-                    strip_id,
-                    experiment_id,
-                    row['original_name'],
-                    None,
-                    None,
-                    timestamp,
-                    None,
-                    0,
-                    row['changed_value'],
-                ),
-            )
-
-            reference_raw = row['c']
-            test_raw = row['t']
-            bg = row['bg']
-            reference_corrected = (reference_raw - bg) if (reference_raw is not None and bg is not None) else None
-            test_corrected = (test_raw - bg) if (test_raw is not None and bg is not None) else None
-            test_reference_ratio = row['ratio']
-            reference_test_ratio = None
-            if test_reference_ratio is not None:
-                try:
-                    val = float(test_reference_ratio)
-                    if abs(val) > 1e-12:
-                        reference_test_ratio = 1.0 / val
-                except Exception:
-                    reference_test_ratio = None
-
-            detail = {}
-            try:
-                detail = json.loads(row['detail_json']) if row['detail_json'] else {}
-            except Exception:
-                detail = {}
-            vertical_crop_reason = detail.get('vertical_crop_reason') if isinstance(detail, dict) else None
-
-            valid_strip = 1 if (test_corrected is not None and reference_corrected is not None) else 0
-            failure_reason = None
-            if not valid_strip:
-                failure_reason = vertical_crop_reason or 'line_detection_incomplete'
-            elif vertical_crop_reason and vertical_crop_reason not in ('ok', 'single_line_cropped'):
-                failure_reason = vertical_crop_reason
-
-            quality_flags = []
-            if vertical_crop_reason and vertical_crop_reason != 'ok':
-                quality_flags.append(vertical_crop_reason)
-            if bg is None:
-                quality_flags.append('missing_background')
-            if test_reference_ratio is None:
-                quality_flags.append('missing_test_reference_ratio')
-            quality_flags_text = ','.join(quality_flags) if quality_flags else None
-
-            conn.execute(
-                """
-                INSERT INTO strip_results (
-                    strip_id,
-                    test_line_raw_intensity,
-                    reference_line_raw_intensity,
-                    test_line_corrected_intensity,
-                    reference_line_corrected_intensity,
-                    test_reference_ratio,
-                    reference_test_ratio,
-                    overall_membrane_background,
-                    valid_strip,
-                    failure_reason,
-                    quality_flags
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(strip_id) DO UPDATE SET
-                    test_line_raw_intensity = COALESCE(strip_results.test_line_raw_intensity, excluded.test_line_raw_intensity),
-                    reference_line_raw_intensity = COALESCE(strip_results.reference_line_raw_intensity, excluded.reference_line_raw_intensity),
-                    test_line_corrected_intensity = COALESCE(strip_results.test_line_corrected_intensity, excluded.test_line_corrected_intensity),
-                    reference_line_corrected_intensity = COALESCE(strip_results.reference_line_corrected_intensity, excluded.reference_line_corrected_intensity),
-                    test_reference_ratio = COALESCE(strip_results.test_reference_ratio, excluded.test_reference_ratio),
-                    reference_test_ratio = COALESCE(strip_results.reference_test_ratio, excluded.reference_test_ratio),
-                    overall_membrane_background = COALESCE(strip_results.overall_membrane_background, excluded.overall_membrane_background),
-                    valid_strip = COALESCE(strip_results.valid_strip, excluded.valid_strip),
-                    failure_reason = COALESCE(strip_results.failure_reason, excluded.failure_reason),
-                    quality_flags = COALESCE(strip_results.quality_flags, excluded.quality_flags)
-                """,
-                (
-                    strip_id,
-                    test_raw,
-                    reference_raw,
-                    test_corrected,
-                    reference_corrected,
-                    test_reference_ratio,
-                    reference_test_ratio,
-                    bg,
-                    valid_strip,
-                    failure_reason,
-                    quality_flags_text,
-                ),
-            )
-
-        conn.commit()
-    finally:
-        upload_conn.close()
+    conn.commit()
 
 
 def sync_experiment_db(default_experiment_id=None):
@@ -709,6 +620,19 @@ def _get_table_columns(conn, table_name):
             'is_pk': bool(r[5]),
         })
     return out
+
+
+def _load_distinct_non_empty(conn, table_name, col_name):
+    rows = conn.execute(
+        f'''
+        SELECT DISTINCT "{col_name}"
+        FROM "{table_name}"
+        WHERE "{col_name}" IS NOT NULL
+          AND TRIM(CAST("{col_name}" AS TEXT)) != ''
+        ORDER BY "{col_name}"
+        '''
+    ).fetchall()
+    return [str(r[0]).strip() for r in rows if r[0] is not None and str(r[0]).strip() != '']
 
 
 def _insert_row(conn, table_name, values_by_col):
@@ -806,11 +730,7 @@ def render_database_page():
             'Select table',
             options=table_names,
             index=0,
-            format_func=lambda x: (
-                'reagent lots' if x == 'reagent_lots'
-                else ('pad material' if x == 'pad_material'
-                      else ('conjugate batch' if x == 'conjugate_batch' else _display_label(x)))
-            ),
+            format_func=_table_display_name,
         )
 
         columns = _get_table_columns(conn, selected_table)
@@ -838,14 +758,18 @@ def render_database_page():
                 if selected_table == 'conjugate_batch' and col_name == 'conjugate_batch_name':
                     required = True
 
-                label = _display_label(col_name) + (' *' if required else '')
+                label = _column_display_name(selected_table, col_name) + (' *' if required else '')
                 default_value = DEFAULT_INPUT_VALUES.get((selected_table, col_name), '')
                 placeholder = 'not empty' if required else ''
 
                 with cols_ui[offset]:
                     if selected_table == 'reagent_lots' and col_name == 'reagent_type':
-                        preset_options = [''] + REAGENT_TYPE_OPTIONS + ['Custom...']
+                        existing_types = _load_distinct_non_empty(conn, 'reagent_lots', 'reagent_type')
+                        merged_options = list(dict.fromkeys(REAGENT_TYPE_OPTIONS + existing_types))
+                        preset_options = [''] + merged_options + ['Custom...']
                         default_option = default_value if default_value in REAGENT_TYPE_OPTIONS else ('Custom...' if default_value else '')
+                        if default_value and default_value in merged_options:
+                            default_option = default_value
                         selected_option = st.selectbox(
                             label,
                             options=preset_options,
@@ -865,8 +789,12 @@ def render_database_page():
                         else:
                             input_values[col_name] = selected_option
                     elif selected_table == 'pad_material' and col_name == 'type':
-                        preset_options = [''] + PAD_TYPE_OPTIONS + ['Custom...']
+                        existing_types = _load_distinct_non_empty(conn, 'pad_material', 'type')
+                        merged_options = list(dict.fromkeys(PAD_TYPE_OPTIONS + existing_types))
+                        preset_options = [''] + merged_options + ['Custom...']
                         default_option = default_value if default_value in PAD_TYPE_OPTIONS else ('Custom...' if default_value else '')
+                        if default_value and default_value in merged_options:
+                            default_option = default_value
                         selected_option = st.selectbox(
                             label,
                             options=preset_options,
@@ -939,7 +867,8 @@ def render_database_page():
                 payload[name] = converted
 
             if missing:
-                st.error(f'Not empty required: {", ".join(missing)}')
+                missing_labels = [_column_display_name(selected_table, n) for n in missing]
+                st.error(f'Not empty required: {", ".join(missing_labels)}')
             elif convert_errors:
                 st.error('; '.join(convert_errors))
             elif not payload:
@@ -1039,7 +968,7 @@ def render_database_page():
             visible_cols = [c for c in visible_df.columns if c not in hidden_in_table]
             visible_df = visible_df[visible_cols]
 
-        st.caption(f'Table: {_display_label(selected_table)} | Rows: {len(df)}')
+        st.caption(f'Table: {_table_display_name(selected_table)} | Rows: {len(df)}')
         if df.empty:
             st.info('No rows in this table.')
             return
@@ -1047,7 +976,7 @@ def render_database_page():
         pk_names = [c['name'] for c in columns if c['is_pk']]
         header_cols = st.columns([1] * len(visible_df.columns) + [0.6])
         for idx, col_name in enumerate(visible_df.columns):
-            header_cols[idx].write(_display_label(col_name))
+            header_cols[idx].write(_column_display_name(selected_table, col_name))
         header_cols[-1].write('remove')
 
         remove_label = _build_remove_button_label()

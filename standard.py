@@ -626,7 +626,7 @@ def render_standard_page():
         st.image(
             original,
             caption='Original',
-            use_container_width=True
+            width='stretch'
         )
 
     with cols[1]:
@@ -634,7 +634,7 @@ def render_standard_page():
         st.image(
             gray,
             caption='Grayscale',
-            use_container_width=True
+            width='stretch'
         )
 
     with cols[2]:
@@ -642,7 +642,7 @@ def render_standard_page():
         st.image(
             enhanced_for_detection,
             caption='Enhanced',
-            use_container_width=True
+            width='stretch'
         )
 
     with cols[3]:
@@ -650,7 +650,7 @@ def render_standard_page():
         st.image(
             vertical_overlay,
             caption='Detected Boxes',
-            use_container_width=True
+            width='stretch'
         )
 
     st.caption(
@@ -663,7 +663,7 @@ def render_standard_page():
 
     st.dataframe(
         standard_rows,
-        use_container_width=True
+        width='stretch'
     )
 
     st.caption(

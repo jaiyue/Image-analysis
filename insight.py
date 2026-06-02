@@ -14,7 +14,9 @@ STAR_ICON_PATH = ASSETS_DIR / 'star.png'
 YELLOW_STAR_ICON_PATH = ASSETS_DIR / 'yellow_star.png'
 
 CHANGED_FIELD_NAMES = [
+    'sample_equivalent_mg_ml',
     'nitrocellulose_material',
+    'cassette',
     'sample_pad_material',
     'sample_pad_pretreatment_lot',
     'conjugate_pad_material',
@@ -22,6 +24,7 @@ CHANGED_FIELD_NAMES = [
     'absorbent_pad_material',
     'running_buffer_lot',
     'glide_buffer_lot',
+    'reconstitution_buffer_lot',
     'test_line_reagent',
     'test_line_concentration_mg_ml',
     'reference_line_reagent',
@@ -33,6 +36,19 @@ CHANGED_FIELD_NAMES = [
     'stability_timepoint',
     'experiment_notes',
 ]
+
+
+def _sort_by_id_desc(df):
+    if df.empty or 'id' not in df.columns:
+        return df
+    out = df.copy()
+    out['_id_num'] = pd.to_numeric(out['id'], errors='coerce')
+    out = out.sort_values(
+        by=['_id_num', 'id'],
+        ascending=[False, False],
+        na_position='last',
+    ).drop(columns=['_id_num'])
+    return out.reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -89,6 +105,20 @@ def _ratio_group_color(group_id):
     if group_id is None or pd.isna(group_id):
         return '#333333'
     return palette[int(group_id) % len(palette)]
+
+
+def _experiment_group_color(experiment_id):
+    palette = [
+        '#1f77b4', '#2ca02c', '#d62728', '#ff7f0e', '#9467bd',
+        '#17becf', '#bcbd22', '#8c564b', '#e377c2', '#7f7f7f',
+    ]
+    if experiment_id is None or pd.isna(experiment_id):
+        return '#333333'
+    try:
+        idx = int(experiment_id)
+    except Exception:
+        idx = abs(hash(str(experiment_id)))
+    return palette[idx % len(palette)]
 
 
 def _fmt4(v):
@@ -199,15 +229,22 @@ def render_insights_page():
     except Exception:
         rows = []
 
-    table_df = pd.DataFrame(rows, columns=['id', 'c', 't', 'bg', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred', 'changed_field'])
+    table_df = pd.DataFrame(
+        rows,
+        columns=['id', 'experiment_id', 'c', 't', 'bg', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred', 'changed_field', 'changed_value'],
+    )
     if not table_df.empty:
-        table_df = table_df.sort_values(by=['date', 'time'], ascending=[False, False]).reset_index(drop=True)
+        table_df = _sort_by_id_desc(table_df)
         st.session_state['insight_table_cache'] = table_df.copy()
     elif 'insight_table_cache' in st.session_state:
         table_df = st.session_state['insight_table_cache'].copy()
 
     if 'changed_field' not in table_df.columns:
         table_df['changed_field'] = None
+    if 'changed_value' not in table_df.columns:
+        table_df['changed_value'] = None
+    if 'experiment_id' not in table_df.columns:
+        table_df['experiment_id'] = None
 
     if table_df.empty:
         st.info('No insight data yet. Process images in Library first.')
@@ -226,10 +263,23 @@ def render_insights_page():
 
     filter_cols = st.columns([1.8, 2.1, 1.4, 1.4])
     id_keyword = filter_cols[0].text_input('Filter ID', value='', placeholder='e.g. 00001')
+    dynamic_changed = []
+    try:
+        dynamic_changed = sorted(
+            {
+                str(x).strip()
+                for x in table_df['changed_field'].tolist()
+                if x is not None and str(x).strip() != ''
+            }
+        )
+    except Exception:
+        dynamic_changed = []
+    changed_options = ['Full'] + list(dict.fromkeys(CHANGED_FIELD_NAMES + dynamic_changed))
+    changed_default = 'sample_equivalent_mg_ml' if 'sample_equivalent_mg_ml' in changed_options else 'Full'
     changed_filter = filter_cols[1].selectbox(
         'changed',
-        options=['Full'] + CHANGED_FIELD_NAMES,
-        index=0,
+        options=changed_options,
+        index=changed_options.index(changed_default),
         format_func=lambda x: x if x == 'Full' else _display_label(x),
     )
     ratio_bucket = filter_cols[2].selectbox('Ratio range', ['0~0.9', '0.9~1.1', '1.1+', 'Full'], index=3)
@@ -249,9 +299,10 @@ def render_insights_page():
     else:
         date_range = (None, None)
 
-    option_cols = st.columns([1.2, 1.2, 2.6])
+    option_cols = st.columns([1.2, 1.4, 1.5, 2.1])
     star_only = option_cols[0].checkbox('Starred only', value=False)
-    ratio_grouping = option_cols[1].checkbox('Group similar ratio', value=True)
+    ratio_grouping = option_cols[1].checkbox('Group similar ratio', value=False)
+    experiment_grouping = option_cols[2].checkbox('Group by experiment', value=False)
 
     filtered_df = table_df.copy()
     if id_keyword.strip():
@@ -296,10 +347,7 @@ def render_insights_page():
         ).reset_index(drop=True)
     else:
         filtered_df['ratio_group'] = None
-        filtered_df = filtered_df.sort_values(
-            by=['date', 'time'],
-            ascending=[False, False],
-        ).reset_index(drop=True)
+        filtered_df = _sort_by_id_desc(filtered_df)
 
     if changed_filter == 'Full':
         export_df = pd.DataFrame({
@@ -307,10 +355,10 @@ def render_insights_page():
             'id': filtered_df['id'].astype(str),
             'reference_line_corrected_intensity': filtered_df['correct_c'].apply(_fmt4),
             'test_line_corrected_intensity': filtered_df['correct_t'].apply(_fmt4),
+            'bg': filtered_df['bg_num'].apply(_fmt4),
             'test_reference_ratio': filtered_df['ratio'].apply(_fmt4),
             '(c-bg)+(t-bg)': filtered_df['ct_bg_sum'].apply(_fmt4),
             'date': filtered_df['date'].apply(_fmt_date_simple),
-            'time': filtered_df['time'].apply(_fmt_time_simple),
         })
         csv_bytes = export_df.to_csv(index=False).encode('utf-8')
         export_name = 'insights_export.csv'
@@ -363,16 +411,16 @@ def render_insights_page():
         st.info('No records matched current filters.')
         return
 
-    head_cols = st.columns([0.70, 0.95, 1.5, 1.5, 1.3, 1.3, 0.9, 0.95, 1.20])
+    head_cols = st.columns([0.70, 0.95, 1.5, 1.5, 0.95, 1.3, 1.3, 0.9, 1.20])
     headers = [
         'star',
         'id',
         'reference_line_corrected_intensity',
         'test_line_corrected_intensity',
+        'bg',
         'test_reference_ratio',
         '(c-bg)+(t-bg)',
         'date',
-        'time',
         'detail',
     ]
     for i, h in enumerate(headers):
@@ -380,7 +428,7 @@ def render_insights_page():
             st.write(h)
 
     for _, row in filtered_df.iterrows():
-        row_cols = st.columns([0.70, 0.95, 1.5, 1.5, 1.3, 1.3, 0.9, 0.95, 1.20])
+        row_cols = st.columns([0.70, 0.95, 1.5, 1.5, 0.95, 1.3, 1.3, 0.9, 1.20])
         with row_cols[0]:
             is_starred = bool(row.get('starred'))
             if st.button(
@@ -392,7 +440,10 @@ def render_insights_page():
                 set_starred_status(row['id'], not is_starred)
                 st.rerun()
         with row_cols[1]:
-            id_color = _ratio_group_color(row.get('ratio_group'))
+            if experiment_grouping:
+                id_color = _experiment_group_color(row.get('experiment_id'))
+            else:
+                id_color = _ratio_group_color(row.get('ratio_group'))
             st.markdown(
                 f"<span style='color:{id_color};font-weight:400'>{row['id']}</span>",
                 unsafe_allow_html=True,
@@ -402,13 +453,13 @@ def render_insights_page():
         with row_cols[3]:
             st.write(_fmt4(row.get('correct_t')))
         with row_cols[4]:
-            st.write(_fmt4(row.get('ratio')))
+            st.write(_fmt4(row.get('bg_num')))
         with row_cols[5]:
-            st.write(_fmt4(row.get('ct_bg_sum')))
+            st.write(_fmt4(row.get('ratio')))
         with row_cols[6]:
-            st.write(_fmt_date_simple(row.get('date')))
+            st.write(_fmt4(row.get('ct_bg_sum')))
         with row_cols[7]:
-            st.write(_fmt_time_simple(row.get('time')))
+            st.write(_fmt_date_simple(row.get('date')))
         with row_cols[8]:
             if st.button('Detail', key=f"insight_detail_{row['id']}"):
                 st.query_params['insight_detail_id'] = str(row['id'])

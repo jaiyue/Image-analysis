@@ -1,12 +1,6 @@
 # Image Analysis Studio
 
-A Streamlit app for grayscale image analysis with:
-
-- image upload and analysis in `Library`
-- standard reference generation in `Standard`
-- summary table + CSV export in `Insights`
-- detail view per analyzed record (opened from `Insights`)
-- persisted run metadata in `uploads.db`
+Streamlit app for strip image analysis, experiment tracking, and export.
 
 ## Run
 
@@ -15,94 +9,64 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Main pages
+## Database Structure
 
-- `Library`
-- Upload images/CSV.
-- Detect dark regions and compute `c`, `t`, `background`, `ratio`.
-- Save generated images and metadata.
+Main DB: `experiment_data.db`
 
-- `Standard`
-- Process `image.jpeg`.
-- Generate `standard_reference.json`.
+- `experiments`
+  - one row per experiment
+  - key: `experiment_id`
+  - includes `condition` (changed field name) and experiment metadata
+- `strip_results`
+  - one row per image/strip
+  - key: `strip_id`
+  - link: `experiment_id -> experiments.experiment_id`
+  - includes:
+    - `condition_value`
+    - analysis metrics (`test/reference raw`, `corrected`, `ratio`, `background`, `valid_strip`, `failure_reason`, `quality_flags`)
+    - strip metadata (`image_filename`, `sample_equivalent_mg_ml`, `image_upload_datetime`, etc.)
+- `reagent_lots`
+  - lot master data (`lot_id`, `lot_name`, `reagent_type`, ...)
+- `pad_material`
+  - pad material master data (`pad_id`, `pad_name`, `type`, ...)
+- `conjugate_batch`
+  - conjugate batch master data (`conjugate_batch_name`, `conjugate_ratio`, `reconstitution_volume_ul`)
 
-- `Insights`
-- Show `id`, `c`, `t`, `ratio`, `date`, `time`.
-- Export CSV (without `detail` payload).
-- Open per-row detail page.
+In `experiment_data.db`:
 
-- `Clear All` (sidebar)
-- Remove generated files in `uploads/`.
-- Clear app session cache/state.
+- `upload_records`
+  - image-level processed outputs and display data
+- `upload_meta`
+  - upload-related migration/state flags
 
-## Image Processing Flow (Library) & Display Names
+## Pages
 
-`Library` page uses `analyze_library_image` in `image_processing.py`.
+### Library
 
-1. `Original`
-- source RGB image from uploader.
-- saved as `uploads/{id}_original.png`.
+1. Select or create experiment.
+2. Choose `changed` (default: `sample_equivalent_mg_ml`).
+3. Upload images.
+4. For each image, input changed value and click `Save`.
+5. App writes images + metrics to `experiment_data.db`.
 
-2. `Grayscale`
-- convert to grayscale (`process_image_to_grayscale`).
-- saved as `uploads/{id}_gray.png`.
+### Insights
 
-3. `Cropped` (center ROI for vertical-line search)
-- center crop with width/height ratio logic.
-- saved as `uploads/{id}_cropped.png`.
-- this is mainly an intermediate image and is usually not shown directly in `Insight Detail`.
+1. Filter by ID, changed field, ratio range, date, star.
+2. Review table and open `Detail` per row.
+3. Export from bottom-right floating button.
 
-4. `Cropped Vertical Overlay` (vertical candidate boxes)
-- detect vertical dark regions and draw cyan boxes.
-- saved as `uploads/{id}_cropped_vertical.png`.
-- in Insight Detail this is shown under caption:
-  - `Cropped Vertical Overlay` (priority path is `cropped_vertical_path`; fallback is `cropped_path`).
+### Database
 
-5. `Vertical Crop (Length Limited)`
-- crop area between selected vertical guide lines.
-- saved as `uploads/{id}_vertical_crop.png` when available.
-- shown in Insight Detail as:
-  - `Vertical Crop (Length Limited)`.
+1. Select table (`reagent_lots`, `pad_material`, `conjugate_batch`).
+2. Fill input fields and click `Save`.
+3. Use table-level remove action to delete rows.
 
-6. `Cropped (Top/Bottom 20% Removed)`
-- trim top/bottom 20% and left/right 5% before horizontal line detection.
-- saved as `uploads/{id}_cropped_trimmed.png`.
-- shown in Insight Detail as:
-  - `Cropped (Top/Bottom 20% Removed)`.
+## Export Format
 
-7. `Dark Regions Overlay` (first-pass horizontal regions)
-- draw red boxes for initial horizontal dark-region detection.
-- saved as `uploads/{id}_dark_regions.png`.
-
-8. `Re-Crop Overlay` (final c/t regions)
-- re-crop around selected regions and redraw labeled boxes (`c`, `t`, ...).
-- saved as `uploads/{id}_recrop.png`.
-- shown in Library as:
-  - `Dark Line Regions Re-Crop — {original_name}`
-- shown in Insight Detail as:
-  - `Re-Crop Overlay`.
-
-9. `c/t/background/ratio` metrics
-- line intensity for each detected region uses a trimmed mean:
-  - flatten region pixels
-  - drop lowest 10% and highest 10%
-  - average the remaining 80%
-- stored values are converted to dark-value scale (`255 - gray`) and rounded to 4 decimals.
-
-## Structure
-
-- `app.py`: app entrypoint
-- `library.py`: upload + analysis + metadata write
-- `standard.py`: standard reference generation
-- `insight.py`: insights table + export + detail routing
-- `insight_detail.py`: detail record viewer
-- `navigation.py`: sidebar navigation
-- `layout.py`, `theme.py`: UI shell/theme
-- `uploads/`: generated images
-- `uploads.db`: persisted upload/analysis records
-
-## Database Notes
-
-- In `Database` page, `pad_material table` supports batch insert for `pad_id`.
-- You can input multiple `pad_id` values separated by `,` or `，` (for example: `P001,P002,P003`).
-- On `Save`, each `pad_id` is inserted as a separate row, while other fields are reused.
+- If changed filter = `Full`:
+  - export `CSV`
+  - columns: `star`, `id`, corrected intensities, ratio, `(c-bg)+(t-bg)`, `date`, `time`
+- If changed filter != `Full`:
+  - export `Excel (.xlsx)` with 2 sheets:
+    - `experiment`: matched experiment rows
+    - `strip`: matched strip rows (merged strip results data)

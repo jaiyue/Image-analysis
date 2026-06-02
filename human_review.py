@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).parent
 REFERENCE_IMAGE_PATH = PROJECT_ROOT / 'image.png'
 UPLOADS_DIR = PROJECT_ROOT / 'uploads'
 REVIEW_DB_PATH = PROJECT_ROOT / 'human_review.db'
-UPLOADS_DB_PATH = PROJECT_ROOT / 'uploads.db'
+EXPERIMENT_DB_PATH = PROJECT_ROOT / 'experiment_data.db'
 
 
 def _pick_random_original_image():
@@ -142,23 +142,23 @@ def _load_history_rows():
 
 
 def _load_system_ratio_by_image_id(image_id):
-    if not UPLOADS_DB_PATH.exists():
+    if not EXPERIMENT_DB_PATH.exists():
         return None
-    conn = sqlite3.connect(UPLOADS_DB_PATH)
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
             """
-            SELECT ratio
-            FROM upload_records
-            WHERE id = ?
+            SELECT test_reference_ratio
+            FROM strip_results
+            WHERE strip_id = ?
             LIMIT 1
             """,
             (str(image_id),),
         ).fetchone()
         if row is None:
             return None
-        value = row['ratio']
+        value = row['test_reference_ratio']
         if value is None:
             return None
         return float(value)
@@ -169,9 +169,9 @@ def _load_system_ratio_by_image_id(image_id):
 
 
 def _load_starred_by_image_id(image_id):
-    if not UPLOADS_DB_PATH.exists():
+    if not EXPERIMENT_DB_PATH.exists():
         return False
-    conn = sqlite3.connect(UPLOADS_DB_PATH)
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
@@ -312,7 +312,7 @@ def render_human_review_page():
             if manual_ratio_avg is None:
                 st.warning('Manual t/c ratio cannot be computed because c contains only 0.')
             elif system_ratio is None:
-                st.info('System ratio not found for this image in uploads.db.')
+                st.info('System ratio not found for this image in experiment_data.db.')
                 st.write(f"Manual t/c ratio avg: {manual_ratio_avg:.6f}")
             else:
                 ratio_diff = manual_ratio_avg - system_ratio

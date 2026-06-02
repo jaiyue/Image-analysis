@@ -7,13 +7,15 @@ CREATE TABLE IF NOT EXISTS experiments (
     experiment_title TEXT,
     operator TEXT DEFAULT 'A.Li',
     nitrocellulose_material TEXT,
+    cassette TEXT,
     sample_pad_material TEXT,
     sample_pad_pretreatment_lot TEXT,
-    conjugate_pad_material TEXT,
+    conjugate_pad_material TEXT DEFAULT 'NGF66',
     conjugate_pad_pretreatment_lot TEXT,
     absorbent_pad_material TEXT,
     running_buffer_lot TEXT,
     glide_buffer_lot TEXT,
+    reconstitution_buffer_lot TEXT,
     test_line_reagent TEXT,
     test_line_concentration_mg_ml REAL,
     reference_line_reagent TEXT,
@@ -31,6 +33,7 @@ CREATE TABLE IF NOT EXISTS experiments (
 CREATE TABLE IF NOT EXISTS strip_results (
     strip_id TEXT PRIMARY KEY,
     experiment_id INTEGER,
+    changed_field TEXT,
     condition_value TEXT,
     test_line_raw_intensity REAL,
     reference_line_raw_intensity REAL,
@@ -39,6 +42,7 @@ CREATE TABLE IF NOT EXISTS strip_results (
     test_reference_ratio REAL,
     reference_test_ratio REAL,
     overall_membrane_background REAL,
+    ct_bg_sum REAL,
     valid_strip INTEGER,
     failure_reason TEXT,
     quality_flags TEXT,
@@ -80,6 +84,23 @@ CREATE TABLE IF NOT EXISTS pad_material (
     notes TEXT
 );
 
+CREATE TABLE IF NOT EXISTS upload_records (
+    id TEXT PRIMARY KEY,
+    original_name TEXT,
+    original_path TEXT,
+    gray_path TEXT,
+    cropped_name TEXT,
+    cropped_path TEXT,
+    dark_regions_path TEXT,
+    starred INTEGER DEFAULT 0 CHECK (starred IN (0, 1)),
+    detail_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS upload_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_strip_results_experiment_id
     ON strip_results(experiment_id);
 
@@ -91,3 +112,6 @@ CREATE INDEX IF NOT EXISTS idx_reagent_lots_reagent_type
 
 CREATE INDEX IF NOT EXISTS idx_pad_material_type
     ON pad_material(type);
+
+CREATE INDEX IF NOT EXISTS idx_upload_records_id
+    ON upload_records(id);

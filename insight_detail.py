@@ -16,12 +16,14 @@ IMAGE_ANALYSIS_FIELDS = [
     'test_reference_ratio',
     'reference_test_ratio',
     'overall_membrane_background',
+    'ct_bg_sum',
     'valid_strip',
     'failure_reason',
     'quality_flags',
 ]
 
 STRIP_RESULTS_META_FIELDS = [
+    'changed_field',
     'image_filename',
     'sample_equivalent_mg_ml',
     'dilution_equivalent',
@@ -177,7 +179,7 @@ def render_insight_detail_page(detail_id):
     init_uploads_db()
     detail_entry = get_upload_detail_by_id(detail_id)
     if detail_entry is None:
-        st.warning('Detail record not found in uploads.db.')
+        st.warning('Detail record not found in experiment_data.db.')
         return
 
     detail = detail_entry.get('detail', {})
