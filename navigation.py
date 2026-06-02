@@ -21,6 +21,11 @@ PAGE_GROUPS = [
                 'description': 'A place for charts, summaries, and model outputs.'
             },
             {
+                'name': 'Analysis',
+                'label': 'Analysis',
+                'description': 'Analysis workspace based on experiment_data.db.'
+            },
+            {
                 'name': 'Review',
                 'label': 'Review',
                 'description': 'Manual review page with side-by-side image checks and visual score inputs.'

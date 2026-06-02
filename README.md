@@ -55,6 +55,28 @@ In `experiment_data.db`:
 2. Review table and open `Detail` per row.
 3. Export from bottom-right floating button.
 
+### Analysis
+
+1. Open `Analysis`.
+2. The page reads `experiments` and `strip_results` from `experiment_data.db`.
+3. Experiments are grouped by shared experiment settings. `cassette`, `experiment_id`, and `experiment_title` are ignored for grouping.
+4. The page outputs one summary row per analysis group.
+
+## Analysis Grouping Rule
+
+- Source tables: `experiments` + `strip_results`
+- Join rule: `strip_results.experiment_id -> experiments.experiment_id`
+- Grouping target: one analysis row represents one experiment setting group
+- Ignored fields during grouping:
+  - `cassette`
+  - `experiment_id`
+  - `experiment_title`
+- Effective meaning:
+  - if two experiment rows differ only in `cassette`, `experiment_id`, or `experiment_title`, they are treated as the same analysis group
+  - strips from those experiments are pooled together for score calculation
+- Display:
+  - grouped `experiment_title` values are joined into one display label
+
 ### Database
 
 1. Select table (`reagent_lots`, `pad_material`, `conjugate_batch`).
@@ -65,8 +87,45 @@ In `experiment_data.db`:
 
 - If changed filter = `Full`:
   - export `CSV`
-  - columns: `star`, `id`, corrected intensities, ratio, `(c-bg)+(t-bg)`, `date`, `time`
+  - columns: `star`, `id`, corrected intensities, `bg`, ratio, `(c-bg)+(t-bg)`, `date`
 - If changed filter != `Full`:
   - export `Excel (.xlsx)` with 2 sheets:
     - `experiment`: matched experiment rows
     - `strip`: matched strip rows (merged strip results data)
+
+## Analysis Metrics
+
+| Metric | Weight | Calculation | Output | Higher Is Better? |
+| --- | --- | --- | --- | --- |
+| Competitive Response Score | 35% | `abs(Pearson r)` between IgG and T/R | 0-1 | Yes |
+| Dynamic Range Score | 25% | `max(T/R) - min(T/R)` | Real number | Yes |
+| Repeatability Score | 20% | `1 - CV(T/R)` | 0-1 | Yes |
+| Background Quality Score | 10% | `1 - Normalized BG` | 0-1 | Yes |
+| Reference Stability Score | 10% | `1 - CV(Control Line)` | 0-1 | Yes |
+
+## Analysis Calculation Standard
+
+- `IgG` uses `sample_equivalent_mg_ml`.
+- `T/R` uses `test_reference_ratio`.
+- `Control Line` uses `reference_line_corrected_intensity`.
+- `Competitive Response Score`:
+  - compute `abs(Pearson r)` between `sample_equivalent_mg_ml` and mean `T/R` inside one analysis group
+  - score range is `0-1`
+- `Dynamic Range Score`:
+  - first compute `max(mean T/R) - min(mean T/R)` inside each analysis group
+  - then normalize across all current analysis groups
+  - best dynamic range = `1`, worst dynamic range = `0`
+- `Repeatability Score`:
+  - for each concentration, compute `CV(T/R)` across repeated strips
+  - average the available CV values
+  - final score = `1 - mean CV`
+- `Background Quality Score`:
+  - first compute mean `overall_membrane_background` inside each analysis group
+  - then normalize across all current analysis groups
+  - lowest background = `1`, highest background = `0`
+- `Reference Stability Score`:
+  - compute `CV(reference_line_corrected_intensity)` across strips
+  - final score = `1 - CV`
+- `Total Score`:
+  - weighted average of the five metric scores
+  - if one metric is missing, the remaining weights are re-normalized automatically

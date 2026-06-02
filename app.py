@@ -8,6 +8,7 @@ from theme import apply_custom_theme, apply_minor_ui_fixes, get_native_theme_is_
 from library import render_library_page
 from standard import render_standard_page
 from results import render_insights_page
+from analysis import render_analysis_page
 from human_review import render_human_review_page
 from database import render_database_page
 from image_processing import upload_and_convert_to_grayscale
@@ -25,6 +26,7 @@ PAGE_HANDLERS = {
     'Library': lambda: render_library_page(),
     'Standard': lambda: render_standard_page(),
     'Results': lambda: render_insights_page(),
+    'Analysis': lambda: render_analysis_page(),
     'Review': lambda: render_human_review_page(),
     'Database': lambda: render_database_page(),
     'Settings': lambda: render_settings_page(),
