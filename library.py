@@ -672,6 +672,137 @@ def _load_latest_experiment_row():
         conn.close()
 
 
+def _load_experiment_title_options():
+    if not EXPERIMENT_DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT experiment_title
+            FROM experiments
+            WHERE experiment_title IS NOT NULL
+              AND TRIM(experiment_title) != ''
+            ORDER BY experiment_title
+            """
+        ).fetchall()
+        return [str(r[0]).strip() for r in rows if r and str(r[0]).strip()]
+    finally:
+        conn.close()
+
+
+def _load_experiment_date_options():
+    if not EXPERIMENT_DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT experiment_date
+            FROM experiments
+            WHERE experiment_date IS NOT NULL
+              AND TRIM(experiment_date) != ''
+            ORDER BY experiment_date DESC
+            """
+        ).fetchall()
+        return [str(r[0]).strip() for r in rows if r and str(r[0]).strip()]
+    finally:
+        conn.close()
+
+
+def _load_experiment_row_by_title(experiment_title):
+    title = str(experiment_title or '').strip()
+    if title == '' or not EXPERIMENT_DB_PATH.exists():
+        return {}
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM experiments
+            WHERE experiment_title = ?
+            ORDER BY experiment_id DESC
+            LIMIT 1
+            """,
+            (title,),
+        ).fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def _apply_previous_experiment_to_form(
+    baseline_row,
+    experiment_specs,
+    changed_options,
+):
+    baseline_row = dict(baseline_row or {})
+    st.session_state['library_exp_experiment_title'] = ''
+    if baseline_row.get('condition') in changed_options:
+        st.session_state['library_exp_changed_selector'] = baseline_row.get('condition')
+        st.session_state['library_changed_field'] = baseline_row.get('condition')
+    for spec in experiment_specs:
+        db_name = spec['db']
+        raw_val = baseline_row.get(db_name)
+        default_val = '' if raw_val is None else str(raw_val)
+        if default_val == '':
+            default_val = EXPERIMENT_DEFAULT_VALUES.get(db_name, '')
+
+        if spec.get('kind') in ('lot_select', 'pad_select', 'conjugate_batch_select'):
+            st.session_state[f'library_exp_{db_name}_select'] = default_val
+        elif db_name == 'drying_time':
+            m = re.match(r'^\s*([0-9]*\.?[0-9]+)\s*(nights?|days?)?\s*$', default_val, flags=re.IGNORECASE)
+            st.session_state[f'library_exp_{db_name}_num'] = m.group(1) if m else ''
+            unit = (m.group(2) or 'nights') if m else 'nights'
+            unit = unit.lower()
+            if unit not in ('nights', 'days'):
+                unit = 'nights'
+            st.session_state[f'library_exp_{db_name}_unit'] = unit
+        elif db_name == 'storage_condition':
+            m = re.match(r'^\s*([0-9]*\.?[0-9]+)\s*(°?\s*[cCfF]|o[cC])?\s*$', default_val)
+            st.session_state[f'library_exp_{db_name}_num'] = m.group(1) if m else ''
+            default_unit_raw = (m.group(2) or '').strip().lower() if m else ''
+            st.session_state[f'library_exp_{db_name}_unit'] = '°F' if default_unit_raw in ('f', '°f') else '°C'
+        else:
+            st.session_state[f'library_exp_{db_name}'] = default_val
+
+
+def _selectbox_with_state(container, label, options, key, default_index=0, format_func=None, label_visibility='visible'):
+    kwargs = {
+        'label': label,
+        'options': options,
+        'key': key,
+        'label_visibility': label_visibility,
+    }
+    if format_func is not None:
+        kwargs['format_func'] = format_func
+    if key not in st.session_state:
+        kwargs['index'] = default_index
+    return container.selectbox(**kwargs)
+
+
+def _text_input_with_state(container, label, key, default_value='', placeholder=''):
+    kwargs = {
+        'label': label,
+        'key': key,
+        'placeholder': placeholder,
+    }
+    if key not in st.session_state:
+        kwargs['value'] = default_value
+    return container.text_input(**kwargs)
+
+
+def _date_input_with_state(container, label, key, default_value):
+    kwargs = {
+        'label': label,
+        'key': key,
+    }
+    if key not in st.session_state:
+        kwargs['value'] = default_value
+    return container.date_input(**kwargs)
+
+
 def _load_reagent_lot_values_by_type():
     out = {k: [] for k in LOT_LINKED_TYPES}
     if not EXPERIMENT_DB_PATH.exists():
@@ -773,13 +904,15 @@ def _load_conjugate_batch_names():
 
 
 def _render_experiment_selector():
-    mode = st.radio(
-        'Experiment mode',
-        options=['New experiment', 'Exist experiment'],
-        horizontal=True,
-        key='library_experiment_mode',
-        label_visibility='collapsed',
-    )
+    mode_row = st.columns([2.4, 2.2])
+    with mode_row[0]:
+        mode = st.radio(
+            'Experiment mode',
+            options=['New experiment', 'Exist experiment'],
+            horizontal=True,
+            key='library_experiment_mode',
+            label_visibility='collapsed',
+        )
 
     if mode == 'New experiment':
         cols = _get_experiment_columns()
@@ -810,34 +943,64 @@ def _render_experiment_selector():
         latest_row = _load_latest_experiment_row()
         has_baseline = bool(latest_row)
         conjugate_batch_names = _load_conjugate_batch_names()
+        previous_experiment_titles = _load_experiment_title_options()
 
         if not has_baseline:
             st.info('No baseline experiment found. Please fill all fields once.')
 
+        previous_none_label = 'previous experiment:None'
+        previous_options = [previous_none_label] + previous_experiment_titles
+        with mode_row[1]:
+            previous_title = _selectbox_with_state(
+                st,
+                'previous experiment',
+                previous_options,
+                key='library_previous_experiment_title',
+                default_index=0,
+                label_visibility='collapsed',
+            )
+        previous_title_value = '' if previous_title == previous_none_label else previous_title
+        previous_row = _load_experiment_row_by_title(previous_title_value) if previous_title_value else {}
+        baseline_row = previous_row if previous_row else latest_row
+
+        previous_applied_key = 'library_previous_experiment_applied_title'
+        prev_applied_title = st.session_state.get(previous_applied_key, None)
+        current_apply_title = previous_title_value if previous_title_value else '__latest__'
+        if prev_applied_title != current_apply_title:
+            _apply_previous_experiment_to_form(
+                baseline_row=baseline_row,
+                experiment_specs=experiment_specs,
+                changed_options=changed_options,
+            )
+            st.session_state[previous_applied_key] = current_apply_title
+
         form_values = {}
         title_col, changed_col, date_col = st.columns(3)
-        form_values['experiment_title'] = title_col.text_input(
+        form_values['experiment_title'] = _text_input_with_state(
+            title_col,
             'experiment title *',
-            value='',
-            placeholder='not empty',
             key='library_exp_experiment_title',
+            default_value='',
+            placeholder='not empty',
         )
 
-        changed_default = st.session_state.get('library_changed_field', changed_options[0])
+        changed_default = st.session_state.get('library_exp_changed_selector', st.session_state.get('library_changed_field', changed_options[0]))
         if changed_default not in changed_options:
             changed_default = changed_options[0]
-        changed_ui = changed_col.selectbox(
+        changed_ui = _selectbox_with_state(
+            changed_col,
             'changed',
-            options=changed_options,
-            index=changed_options.index(changed_default),
+            changed_options,
             key='library_exp_changed_selector',
+            default_index=changed_options.index(changed_default),
             format_func=_display_label,
         )
         st.session_state['library_changed_field'] = changed_ui
-        form_values['experiment_date'] = date_col.date_input(
+        form_values['experiment_date'] = _date_input_with_state(
+            date_col,
             'experiment date *',
-            value=date.today(),
             key='library_exp_experiment_date',
+            default_value=date.today(),
         )
 
         show_specs = [s for s in experiment_specs if s['ui'] != changed_ui]
@@ -847,7 +1010,7 @@ def _render_experiment_selector():
             for j, spec in enumerate(show_specs[i:i + 3]):
                 ui_label = spec['ui']
                 db_name = spec['db']
-                latest_val = latest_row.get(db_name)
+                latest_val = baseline_row.get(db_name)
                 default_val = '' if latest_val is None else str(latest_val)
                 if default_val == '':
                     default_val = EXPERIMENT_DEFAULT_VALUES.get(db_name, '')
@@ -863,11 +1026,12 @@ def _render_experiment_selector():
                     if not options:
                         options = ['']
                     default_idx = options.index(default_val) if default_val in options else 0
-                    form_values[db_name] = row_cols[j].selectbox(
+                    form_values[db_name] = _selectbox_with_state(
+                        row_cols[j],
                         label,
-                        options=options,
-                        index=default_idx,
+                        options,
                         key=f'library_exp_{db_name}_select',
+                        default_index=default_idx,
                     )
                 elif spec.get('kind') == 'pad_select':
                     options = list(pad_material_values.get(ui_label, []))
@@ -876,11 +1040,12 @@ def _render_experiment_selector():
                     if not options:
                         options = ['']
                     default_idx = options.index(default_val) if default_val in options else 0
-                    form_values[db_name] = row_cols[j].selectbox(
+                    form_values[db_name] = _selectbox_with_state(
+                        row_cols[j],
                         label,
-                        options=options,
-                        index=default_idx,
+                        options,
                         key=f'library_exp_{db_name}_select',
+                        default_index=default_idx,
                     )
                 elif spec.get('kind') == 'conjugate_batch_select':
                     options = list(conjugate_batch_names)
@@ -889,11 +1054,12 @@ def _render_experiment_selector():
                     if not options:
                         options = ['']
                     default_idx = options.index(default_val) if default_val in options else 0
-                    form_values[db_name] = row_cols[j].selectbox(
+                    form_values[db_name] = _selectbox_with_state(
+                        row_cols[j],
                         label,
-                        options=options,
-                        index=default_idx,
+                        options,
                         key=f'library_exp_{db_name}_select',
+                        default_index=default_idx,
                     )
                 elif db_name == 'drying_time':
                     m = re.match(r'^\s*([0-9]*\.?[0-9]+)\s*(nights?|days?)?\s*$', default_val, flags=re.IGNORECASE)
@@ -903,17 +1069,19 @@ def _render_experiment_selector():
                     if default_unit not in ('nights', 'days'):
                         default_unit = 'nights'
                     dt_num_col, dt_unit_col = row_cols[j].columns([2, 2])
-                    drying_num = dt_num_col.text_input(
+                    drying_num = _text_input_with_state(
+                        dt_num_col,
                         label,
-                        value=default_num,
-                        placeholder=placeholder,
                         key=f'library_exp_{db_name}_num',
+                        default_value=default_num,
+                        placeholder=placeholder,
                     )
-                    drying_unit = dt_unit_col.selectbox(
+                    drying_unit = _selectbox_with_state(
+                        dt_unit_col,
                         'unit',
-                        options=['nights', 'days'],
-                        index=0 if default_unit == 'nights' else 1,
+                        ['nights', 'days'],
                         key=f'library_exp_{db_name}_unit',
+                        default_index=0 if default_unit == 'nights' else 1,
                     )
                     form_values[db_name] = (f'{drying_num.strip()} {drying_unit}' if (drying_num or '').strip() else '')
                 elif db_name == 'storage_condition':
@@ -925,25 +1093,28 @@ def _render_experiment_selector():
                     else:
                         default_unit = '°C'
                     sc_num_col, sc_unit_col = row_cols[j].columns([2, 1])
-                    storage_num = sc_num_col.text_input(
+                    storage_num = _text_input_with_state(
+                        sc_num_col,
                         label,
-                        value=default_num,
-                        placeholder=placeholder,
                         key=f'library_exp_{db_name}_num',
+                        default_value=default_num,
+                        placeholder=placeholder,
                     )
-                    storage_unit = sc_unit_col.selectbox(
+                    storage_unit = _selectbox_with_state(
+                        sc_unit_col,
                         'unit',
-                        options=['°C', '°F'],
-                        index=0 if default_unit == '°C' else 1,
+                        ['°C', '°F'],
                         key=f'library_exp_{db_name}_unit',
+                        default_index=0 if default_unit == '°C' else 1,
                     )
                     form_values[db_name] = (f'{storage_num.strip()} {storage_unit}' if (storage_num or '').strip() else '')
                 else:
-                    form_values[db_name] = row_cols[j].text_input(
+                    form_values[db_name] = _text_input_with_state(
+                        row_cols[j],
                         label,
-                        value=default_val,
-                        placeholder=placeholder,
                         key=f'library_exp_{db_name}',
+                        default_value=default_val,
+                        placeholder=placeholder,
                     )
 
         save_clicked = st.button('Save experiment', key='library_save_experiment', width='content')
@@ -957,14 +1128,14 @@ def _render_experiment_selector():
             payload = {'experiment_date': form_values['experiment_date'].isoformat()}
             payload['experiment_title'] = title
             payload['condition'] = changed_ui
-            payload['operator'] = (latest_row.get('operator') or 'A.Li')
+            payload['operator'] = (baseline_row.get('operator') or latest_row.get('operator') or 'A.Li')
 
             # Start from baseline to avoid refilling unchanged items.
             if has_baseline:
                 for spec in experiment_specs:
                     db_name = spec['db']
-                    if db_name in latest_row:
-                        payload[db_name] = latest_row.get(db_name)
+                    if db_name in baseline_row:
+                        payload[db_name] = baseline_row.get(db_name)
 
             if changed_ui in payload:
                 payload[changed_ui] = None
@@ -1022,6 +1193,21 @@ def _render_experiment_selector():
                 except Exception as e:
                     st.error(f'Failed to save experiment: {e}')
     else:
+        date_options = _load_experiment_date_options()
+        date_placeholder = 'Choose date(Optional)'
+        today_text = date.today().isoformat()
+        existing_date_options = [date_placeholder] + date_options
+        default_date_index = existing_date_options.index(today_text) if today_text in existing_date_options else 0
+        with mode_row[1]:
+            selected_date = _selectbox_with_state(
+                st,
+                'experiment date filter',
+                existing_date_options,
+                key='library_existing_experiment_date_filter',
+                default_index=default_date_index,
+                label_visibility='collapsed',
+            )
+
         cols = _get_experiment_columns()
         db_col_names = {c['name'] for c in cols} if cols else set()
         reagent_lot_values = _load_reagent_lot_values_by_type()
@@ -1038,6 +1224,11 @@ def _render_experiment_selector():
         if exp_df.empty:
             st.info('No experiments found.')
             return
+        if selected_date != date_placeholder and 'experiment_date' in exp_df.columns:
+            exp_df = exp_df[exp_df['experiment_date'].astype(str) == selected_date]
+            if exp_df.empty:
+                st.info('No experiments matched the selected date.')
+                return
 
         existing_selected_id = st.session_state.get('library_selected_experiment_id')
         if existing_selected_id is not None:
@@ -1138,8 +1329,6 @@ def _render_experiment_selector():
 
 def render_library_page():
     st.subheader('Library')
-    st.write(
-        'Upload images or CSV datasets. Images show as thumbnails; CSVs show a preview.')
     st.markdown(
         """
         <style>
@@ -1328,6 +1517,7 @@ def render_library_page():
             ratio_val = analysis["ratio"]
             ct_bg_sum_val = analysis.get("ct_bg_sum")
             vertical_crop_reason = analysis["vertical_crop_reason"]
+            trim_percent_used = analysis.get("trim_percent_used", 20)
 
             if recrop_overlay is not None:
                 with cols[1]:
@@ -1337,10 +1527,14 @@ def render_library_page():
                         width=240
                     )
                 with cols[2]:
-                    mean_only_df = pd.DataFrame(table_rows)[['name', 'gray_mean']].rename(
-                        columns={'gray_mean': 'dark value'}
-                    )
-                    st.dataframe(mean_only_df, width='stretch')
+                    table_df = pd.DataFrame(table_rows)
+                    if {'name', 'gray_mean'}.issubset(table_df.columns):
+                        mean_only_df = table_df[['name', 'gray_mean']].rename(
+                            columns={'gray_mean': 'dark value'}
+                        )
+                        st.dataframe(mean_only_df, width='stretch')
+                    else:
+                        st.info('No dark value table available.')
             else:
                 with cols[1]:
                     st.info(f"No dark line regions detected: {name}")
@@ -1403,7 +1597,8 @@ def render_library_page():
                         'dark_regions_path': str(dark_path) if cropped_overlay is not None else '',
                         'recrop_path': str(recrop_path) if recrop_path.exists() else '',
                     },
-                    'vertical_crop_reason': vertical_crop_reason
+                    'vertical_crop_reason': vertical_crop_reason,
+                    'trim_percent_used': trim_percent_used,
                 }
                 entry = {
                     'id': img_id,

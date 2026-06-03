@@ -685,6 +685,7 @@ def analyze_library_image(gray_pil):
         "ratio": None,
         "ct_bg_sum": None,
         "vertical_crop_reason": "no_vertical_lines",
+        "trim_percent_used": 20,
     }
 
     def _to_dark_value(v):
@@ -856,115 +857,152 @@ def analyze_library_image(gray_pil):
     result["vertical_crop_reason"] = vertical_crop_reason
 
     analysis_img = cropped_between if cropped_between is not None else cropped_for_vertical
-    trim_top = int(round(analysis_img.height * 0.20))
-    trim_bottom = int(round(analysis_img.height * 0.80))
-    trim_left = int(round(analysis_img.width * 0.05))
-    trim_right = int(round(analysis_img.width * 0.95))
-    if (trim_bottom - trim_top >= 2) and (trim_right - trim_left >= 2):
-        analysis_img_trimmed = analysis_img.crop((trim_left, trim_top, trim_right, trim_bottom))
-    else:
-        analysis_img_trimmed = analysis_img
-    result["analysis_img_trimmed"] = analysis_img_trimmed
 
-    profile = build_intensity_profile(analysis_img_trimmed)
-    regions = detect_line_regions(profile, threshold_scale=0.85, min_region_height=2)
-    darkness_results = measure_line_darkness(analysis_img_trimmed, regions)
-    if not regions:
-        return result
+    def _run_trim_pass(src_img, trim_percent):
+        trim_top = int(round(src_img.height * trim_percent))
+        trim_bottom = int(round(src_img.height * (1.0 - trim_percent)))
+        trim_left = int(round(src_img.width * 0.05))
+        trim_right = int(round(src_img.width * 0.95))
+        if (trim_bottom - trim_top >= 2) and (trim_right - trim_left >= 2):
+            analysis_img_trimmed_local = src_img.crop((trim_left, trim_top, trim_right, trim_bottom))
+        else:
+            analysis_img_trimmed_local = src_img
 
-    cropped_overlay = analysis_img_trimmed.convert('RGB')
-    draw = ImageDraw.Draw(cropped_overlay)
-    w_crop2, h_crop2 = cropped_overlay.size
-    for row in darkness_results:
-        y0_r = max(0, int(row['start']))
-        y1_r = min(h_crop2 - 1, int(row['end']))
-        x0_r = max(0, int(row.get('x_start', 0)))
-        x1_r = min(w_crop2 - 1, int(row.get('x_end', w_crop2)))
-        draw.rectangle((x0_r, y0_r, x1_r, y1_r), outline=(255, 0, 0), width=2)
-    result["cropped_overlay"] = cropped_overlay
+        profile = build_intensity_profile(analysis_img_trimmed_local)
+        regions = detect_line_regions(profile, threshold_scale=0.85, min_region_height=2)
+        darkness_results = measure_line_darkness(analysis_img_trimmed_local, regions)
+        if not regions:
+            return {
+                "analysis_img_trimmed": analysis_img_trimmed_local,
+                "cropped_overlay": None,
+                "recrop_overlay": None,
+                "table_rows": [],
+                "c": None,
+                "t": None,
+                "bg": None,
+                "ratio": None,
+                "ct_bg_sum": None,
+                "recrop_results_count": 0,
+                "trim_percent_used": int(round(trim_percent * 100)),
+            }
 
-    pad = 20
-    n_regions = len(darkness_results)
-    take_n = 3 if n_regions == 3 else min(2, n_regions)
-    cy = h_crop2 / 2.0
-    sorted_by_center = sorted(
-        darkness_results,
-        key=lambda r: abs(((r['start'] + r['end']) / 2.0) - cy)
-    )
-    selected = sorted_by_center[:take_n]
-    x_min = min(int(r.get('x_start', 0)) for r in selected)
-    x_max = max(int(r.get('x_end', w_crop2)) for r in selected)
-    y_min = min(int(r['start']) for r in selected)
-    y_max = max(int(r['end']) for r in selected)
-    cx_sel = (x_min + x_max) / 2.0
-    cy_sel = (y_min + y_max) / 2.0
-    half_w = max(cx_sel - x_min, x_max - cx_sel) + pad
-    half_h = max(cy_sel - y_min, y_max - cy_sel) + pad
-    x0_c = max(0, int(round(cx_sel - half_w)))
-    x1_c = min(w_crop2, int(round(cx_sel + half_w)))
-    y0_c = max(0, int(round(cy_sel - half_h)))
-    y1_c = min(h_crop2, int(round(cy_sel + half_h)))
-    refined_crop = analysis_img_trimmed.crop((x0_c, y0_c, x1_c, y1_c))
+        cropped_overlay = analysis_img_trimmed_local.convert('RGB')
+        draw = ImageDraw.Draw(cropped_overlay)
+        w_crop2, h_crop2 = cropped_overlay.size
+        for row in darkness_results:
+            y0_r = max(0, int(row['start']))
+            y1_r = min(h_crop2 - 1, int(row['end']))
+            x0_r = max(0, int(row.get('x_start', 0)))
+            x1_r = min(w_crop2 - 1, int(row.get('x_end', w_crop2)))
+            draw.rectangle((x0_r, y0_r, x1_r, y1_r), outline=(255, 0, 0), width=2)
 
-    recrop_profile = build_intensity_profile(refined_crop)
-    recrop_regions = detect_line_regions(
-        recrop_profile, threshold_scale=0.85, min_region_height=2
-    )
-    recrop_results = measure_line_darkness(refined_crop, recrop_regions)
+        pad = 20
+        n_regions = len(darkness_results)
+        take_n = 3 if n_regions == 3 else min(2, n_regions)
+        cy = h_crop2 / 2.0
+        sorted_by_center = sorted(
+            darkness_results,
+            key=lambda r: abs(((r['start'] + r['end']) / 2.0) - cy)
+        )
+        selected = sorted_by_center[:take_n]
+        x_min = min(int(r.get('x_start', 0)) for r in selected)
+        x_max = max(int(r.get('x_end', w_crop2)) for r in selected)
+        y_min = min(int(r['start']) for r in selected)
+        y_max = max(int(r['end']) for r in selected)
+        cx_sel = (x_min + x_max) / 2.0
+        cy_sel = (y_min + y_max) / 2.0
+        half_w = max(cx_sel - x_min, x_max - cx_sel) + pad
+        half_h = max(cy_sel - y_min, y_max - cy_sel) + pad
+        x0_c = max(0, int(round(cx_sel - half_w)))
+        x1_c = min(w_crop2, int(round(cx_sel + half_w)))
+        y0_c = max(0, int(round(cy_sel - half_h)))
+        y1_c = min(h_crop2, int(round(cy_sel + half_h)))
+        refined_crop = analysis_img_trimmed_local.crop((x0_c, y0_c, x1_c, y1_c))
 
-    recrop_overlay = refined_crop.convert('RGB')
-    draw_recrop = ImageDraw.Draw(recrop_overlay)
-    w_ref, h_ref = recrop_overlay.size
-    label_map = {1: 'c', 2: 't'}
-    for idx, row in enumerate(recrop_results, start=1):
-        y0_rr = max(0, int(row['start']))
-        y1_rr = min(h_ref - 1, int(row['end']))
-        draw_recrop.rectangle((0, y0_rr, w_ref - 1, y1_rr), outline=(255, 0, 0), width=2)
-        draw_recrop.text((4, max(0, y0_rr - 14)), label_map.get(idx, f"line_{idx}"), fill=(255, 0, 0))
-    result["recrop_overlay"] = recrop_overlay
+        recrop_profile = build_intensity_profile(refined_crop)
+        recrop_regions = detect_line_regions(
+            recrop_profile, threshold_scale=0.85, min_region_height=2
+        )
+        recrop_results = measure_line_darkness(refined_crop, recrop_regions)
 
-    name_map = {1: 'c', 2: 't'}
-    table_rows = [{
-        'name': name_map.get(i, f"line_{i}"),
-        'gray_mean': _r4(_to_dark_value(r.get('line_mean', 0.0)))
-    } for i, r in enumerate(recrop_results, start=1)]
-    if len(recrop_results) >= 2:
-        sorted_rows = sorted(recrop_results, key=lambda r: int(r.get('start', 0)))
-        upper_end = int(sorted_rows[0].get('end', 0))
-        lower_start = int(sorted_rows[1].get('start', 0))
-        bg_y0 = max(0, upper_end + 1)
-        bg_y1 = min(h_ref, lower_start)
-        if bg_y1 > bg_y0:
-            refined_np = np.array(refined_crop)
-            if refined_np.ndim == 3:
-                refined_np = np.mean(refined_np, axis=2)
-            bg_region = refined_np[bg_y0:bg_y1, :]
-            if bg_region.size > 0:
-                table_rows.append({'name': 'background', 'gray_mean': _r4(_to_dark_value(float(np.mean(bg_region))))})
+        recrop_overlay = refined_crop.convert('RGB')
+        draw_recrop = ImageDraw.Draw(recrop_overlay)
+        w_ref, h_ref = recrop_overlay.size
+        label_map = {1: 'c', 2: 't'}
+        for idx, row in enumerate(recrop_results, start=1):
+            y0_rr = max(0, int(row['start']))
+            y1_rr = min(h_ref - 1, int(row['end']))
+            draw_recrop.rectangle((0, y0_rr, w_ref - 1, y1_rr), outline=(255, 0, 0), width=2)
+            draw_recrop.text((4, max(0, y0_rr - 14)), label_map.get(idx, f"line_{idx}"), fill=(255, 0, 0))
 
-    c_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'c'), None)
-    t_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 't'), None)
-    bg_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'background'), None)
-    ratio_val = None
-    ct_bg_sum_val = None
-    if c_val is not None and t_val is not None and bg_val is not None:
-        denom = c_val - bg_val
-        if abs(denom) > 1e-12:
-            ratio_val = _r4(float((t_val - bg_val) / denom))
-            table_rows.append({'name': 'ratio', 'gray_mean': ratio_val})
-        ct_bg_sum_val = _r4(float((c_val - bg_val) + (t_val - bg_val)))
-        table_rows.append({'name': '(c-bg)+(t-bg)', 'gray_mean': ct_bg_sum_val})
+        name_map = {1: 'c', 2: 't'}
+        table_rows = [{
+            'name': name_map.get(i, f"line_{i}"),
+            'gray_mean': _r4(_to_dark_value(r.get('line_mean', 0.0)))
+        } for i, r in enumerate(recrop_results, start=1)]
+        if len(recrop_results) >= 2:
+            sorted_rows = sorted(recrop_results, key=lambda r: int(r.get('start', 0)))
+            upper_end = int(sorted_rows[0].get('end', 0))
+            lower_start = int(sorted_rows[1].get('start', 0))
+            bg_y0 = max(0, upper_end + 1)
+            bg_y1 = min(h_ref, lower_start)
+            if bg_y1 > bg_y0:
+                refined_np = np.array(refined_crop)
+                if refined_np.ndim == 3:
+                    refined_np = np.mean(refined_np, axis=2)
+                bg_region = refined_np[bg_y0:bg_y1, :]
+                if bg_region.size > 0:
+                    table_rows.append({'name': 'background', 'gray_mean': _r4(_to_dark_value(float(np.mean(bg_region))))})
 
-    c_val = _r4(c_val)
-    t_val = _r4(t_val)
-    bg_val = _r4(bg_val)
+        c_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'c'), None)
+        t_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 't'), None)
+        bg_val = next((r['gray_mean'] for r in table_rows if r.get('name') == 'background'), None)
+        ratio_val = None
+        ct_bg_sum_val = None
+        if c_val is not None and t_val is not None and bg_val is not None:
+            denom = c_val - bg_val
+            if abs(denom) > 1e-12:
+                ratio_val = _r4(float((t_val - bg_val) / denom))
+                table_rows.append({'name': 'ratio', 'gray_mean': ratio_val})
+            ct_bg_sum_val = _r4(float((c_val - bg_val) + (t_val - bg_val)))
+            table_rows.append({'name': '(c-bg)+(t-bg)', 'gray_mean': ct_bg_sum_val})
 
-    result["table_rows"] = table_rows
-    result["c"] = c_val
-    result["t"] = t_val
-    result["bg"] = bg_val
-    result["ratio"] = ratio_val
-    result["ct_bg_sum"] = ct_bg_sum_val
+        return {
+            "analysis_img_trimmed": analysis_img_trimmed_local,
+            "cropped_overlay": cropped_overlay,
+            "recrop_overlay": recrop_overlay,
+            "table_rows": table_rows,
+            "c": _r4(c_val),
+            "t": _r4(t_val),
+            "bg": _r4(bg_val),
+            "ratio": ratio_val,
+            "ct_bg_sum": ct_bg_sum_val,
+            "recrop_results_count": len(recrop_results),
+            "trim_percent_used": int(round(trim_percent * 100)),
+        }
+
+    trim_schedule = [0.20, 0.15, 0.10, 0.05, 0.00]
+    best_pass = None
+    for trim_percent in trim_schedule:
+        pass_result = _run_trim_pass(analysis_img, trim_percent)
+        if best_pass is None:
+            best_pass = pass_result
+        if int(pass_result.get("recrop_results_count", 0)) >= 2:
+            best_pass = pass_result
+            break
+        if int(pass_result.get("recrop_results_count", 0)) > int(best_pass.get("recrop_results_count", 0)):
+            best_pass = pass_result
+
+    result["analysis_img_trimmed"] = best_pass.get("analysis_img_trimmed")
+    result["cropped_overlay"] = best_pass.get("cropped_overlay")
+    result["recrop_overlay"] = best_pass.get("recrop_overlay")
+    result["table_rows"] = best_pass.get("table_rows", [])
+    result["c"] = best_pass.get("c")
+    result["t"] = best_pass.get("t")
+    result["bg"] = best_pass.get("bg")
+    result["ratio"] = best_pass.get("ratio")
+    result["ct_bg_sum"] = best_pass.get("ct_bg_sum")
+    result["trim_percent_used"] = best_pass.get("trim_percent_used", 20)
     return result
 
 

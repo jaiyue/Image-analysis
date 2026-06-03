@@ -100,7 +100,7 @@ In `experiment_data.db`:
 | Competitive Response Score | 35% | `abs(Pearson r)` between IgG and T/R | 0-1 | Yes |
 | Dynamic Range Score | 25% | `max(T/R) - min(T/R)` | Real number | Yes |
 | Repeatability Score | 20% | `1 - CV(T/R)` | 0-1 | Yes |
-| Background Quality Score | 10% | `1 - Normalized BG` | 0-1 | Yes |
+| Background Quality Score | 10% | `1 - BG/255` | 0-1 | Yes |
 | Reference Stability Score | 10% | `1 - CV(Control Line)` | 0-1 | Yes |
 
 ## Analysis Calculation Standard
@@ -121,8 +121,8 @@ In `experiment_data.db`:
   - final score = `1 - mean CV`
 - `Background Quality Score`:
   - first compute mean `overall_membrane_background` inside each analysis group
-  - then normalize across all current analysis groups
-  - lowest background = `1`, highest background = `0`
+  - then compute `1 - BG/255`
+  - background near `0` = `1`, background near `255` = `0`
 - `Reference Stability Score`:
   - compute `CV(reference_line_corrected_intensity)` across strips
   - final score = `1 - CV`

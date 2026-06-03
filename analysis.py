@@ -21,6 +21,26 @@ GROUP_IGNORE_EXPERIMENT_FIELDS = {
     'cassette',
 }
 
+MATERIAL_FILTER_COLUMNS = [
+    'nitrocellulose_material',
+    'sample_pad_material',
+    'conjugate_pad_material',
+    'absorbent_pad_material',
+    'cassette',
+]
+
+REAGENT_FILTER_COLUMNS = [
+    'test_line_reagent',
+    'reference_line_reagent',
+    'sample_pad_pretreatment_lot',
+    'conjugate_pad_pretreatment_lot',
+    'running_buffer_lot',
+    'glide_buffer_lot',
+    'reconstitution_buffer_lot',
+    'gnp_lot',
+    'conjugate_batch_name',
+]
+
 
 def _fmt4(v):
     if v is None:
@@ -43,6 +63,17 @@ def _clip01(v):
         if pd.isna(v):
             return None
         return max(0.0, min(1.0, float(v)))
+    except Exception:
+        return None
+
+
+def _background_quality_score_255(bg_value):
+    if bg_value is None:
+        return None
+    try:
+        if pd.isna(bg_value):
+            return None
+        return _clip01(1.0 - (float(bg_value) / 255.0))
     except Exception:
         return None
 
@@ -112,6 +143,90 @@ def _joined_titles(series):
     if len(values) <= 3:
         return ' / '.join(values)
     return ' / '.join(values[:3]) + f' (+{len(values) - 3} more)'
+
+
+def _display_label(text):
+    return str(text).replace('_', ' ')
+
+
+def _load_distinct_values(df, columns):
+    values = []
+    seen = set()
+    for col in columns:
+        if col not in df.columns:
+            continue
+        for raw in df[col].tolist():
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            values.append(text)
+    return sorted(values)
+
+
+def _apply_analysis_filters(df):
+    filtered = df.copy()
+
+    filter_cols = st.columns([1.4, 1.6, 1.8, 1.8])
+
+    title_options = ['All'] + _load_distinct_values(filtered, ['experiment_title'])
+    selected_title = filter_cols[0].selectbox(
+        'experiment title',
+        options=title_options,
+        index=0,
+    )
+
+    date_series = pd.to_datetime(filtered.get('experiment_date'), errors='coerce').dropna()
+    if not date_series.empty:
+        default_min = date_series.min().date()
+        default_max = date_series.max().date()
+        date_range = filter_cols[1].date_input(
+            'Date range',
+            value=(default_min, default_max),
+        )
+    else:
+        date_range = (None, None)
+        filter_cols[1].caption('Date range: none')
+
+    selected_materials = filter_cols[2].multiselect(
+        'material',
+        options=_load_distinct_values(filtered, MATERIAL_FILTER_COLUMNS),
+        default=[],
+    )
+    selected_reagents = filter_cols[3].multiselect(
+        'reagent',
+        options=_load_distinct_values(filtered, REAGENT_FILTER_COLUMNS),
+        default=[],
+    )
+
+    if selected_title != 'All':
+        filtered = filtered[filtered['experiment_title'].astype(str) == selected_title]
+
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_date, end_date = date_range
+        if start_date is not None and end_date is not None and 'experiment_date' in filtered.columns:
+            d = pd.to_datetime(filtered['experiment_date'], errors='coerce').dt.date
+            filtered = filtered[((d >= start_date) & (d <= end_date)) | d.isna()]
+
+    if selected_materials:
+        material_mask = pd.Series(False, index=filtered.index)
+        for col in MATERIAL_FILTER_COLUMNS:
+            if col not in filtered.columns:
+                continue
+            material_mask = material_mask | filtered[col].astype(str).isin(selected_materials)
+        filtered = filtered[material_mask]
+
+    if selected_reagents:
+        reagent_mask = pd.Series(False, index=filtered.index)
+        for col in REAGENT_FILTER_COLUMNS:
+            if col not in filtered.columns:
+                continue
+            reagent_mask = reagent_mask | filtered[col].astype(str).isin(selected_reagents)
+        filtered = filtered[reagent_mask]
+
+    return filtered
 
 
 def _fetch_analysis_df():
@@ -250,12 +365,13 @@ def _build_analysis_table(df):
 
     result_df = pd.DataFrame(rows)
     result_df['dynamic_range_score'] = _minmax_normalize(result_df['dynamic_range_raw'], invert=False)
-    result_df['background_quality_score'] = _minmax_normalize(result_df['background_raw'], invert=True)
+    result_df['background_quality_score'] = result_df['background_raw'].apply(_background_quality_score_255)
     result_df['total_score'] = result_df.apply(_weighted_total_score, axis=1)
 
     display_cols = [
         'experiment_title',
         'competitive_response_score',
+        'dynamic_range_raw',
         'dynamic_range_score',
         'repeatability_score',
         'background_quality_score',
@@ -263,8 +379,9 @@ def _build_analysis_table(df):
         'total_score',
     ]
     result_df = result_df[display_cols]
+    result_df = result_df.rename(columns={'dynamic_range_raw': 'dynamic_range_raw_score'})
     result_df = result_df.sort_values(by='total_score', ascending=False, na_position='last').reset_index(drop=True)
-    for col in display_cols[1:]:
+    for col in result_df.columns[1:]:
         result_df[col] = result_df[col].apply(_fmt4)
     return result_df
 
@@ -286,13 +403,18 @@ def render_analysis_page():
         st.info('No joined experiment/strip data found.')
         return
 
+    df = _apply_analysis_filters(df)
+    if df.empty:
+        st.info('No records matched current filters.')
+        return
+
     st.markdown(
         """
         <div style="font-size:0.88rem; line-height:1.2; color:rgba(49, 51, 63, 0.78); margin-bottom:0.6rem;">
             <div><strong>Competitive Response Score (35%)</strong>: <code>abs(Pearson r)</code> between <code>sample_equivalent_mg_ml</code> and mean <code>test_reference_ratio</code>. Range: 0-1.</div>
             <div><strong>Dynamic Range Score (25%)</strong>: first compute <code>max(mean T/R) - min(mean T/R)</code> inside each analysis group; then normalize across all groups, with best = 1 and worst = 0.</div>
             <div><strong>Repeatability Score (20%)</strong>: <code>1 - mean CV(T/R)</code> across repeated strips at the same concentration. Range: 0-1.</div>
-            <div><strong>Background Quality Score (10%)</strong>: first compute mean <code>overall_membrane_background</code> inside each group; then normalize across all groups as <code>1 - normalized BG</code>, with lowest background = 1 and highest background = 0.</div>
+            <div><strong>Background Quality Score (10%)</strong>: compute mean <code>overall_membrane_background</code> inside each group, then score it as <code>1 - BG/255</code>. Background closer to 0 gives a higher score; background closer to 255 gives a lower score.</div>
             <div><strong>Reference Stability Score (10%)</strong>: <code>1 - CV(reference_line_corrected_intensity)</code> across strips. Range: 0-1.</div>
             <div><strong>Total Score</strong>: weighted average of available metric scores. If one metric is missing, the remaining weights are re-normalized automatically.</div>
         </div>

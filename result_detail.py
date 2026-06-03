@@ -4,8 +4,9 @@ import sqlite3
 import streamlit as st
 import pandas as pd
 from PIL import Image, ImageOps
+from image_processing import process_image_to_grayscale, analyze_library_image
 from database import DB_PATH, sync_experiment_db
-from uploads_db import get_upload_detail_by_id, init_uploads_db
+from uploads_db import get_upload_detail_by_id, init_uploads_db, update_upload_detail, upsert_upload_record
 
 
 IMAGE_ANALYSIS_FIELDS = [
@@ -170,6 +171,263 @@ def _render_table_editor(row_dict, edit_mode, key_prefix, width='stretch', hide_
     ).copy()
 
 
+def _save_optional_image(img, path_str):
+    if img is None or not path_str:
+        return
+    path = Path(path_str)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path)
+
+
+def _update_strip_results_analysis(strip_id, c_val, t_val, bg_val, ratio_val, ct_bg_sum_val, vertical_crop_reason):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        test_raw = float(t_val) if t_val is not None else None
+        reference_raw = float(c_val) if c_val is not None else None
+        bg = float(bg_val) if bg_val is not None else None
+        ratio = float(ratio_val) if ratio_val is not None else None
+        ct_bg_sum = float(ct_bg_sum_val) if ct_bg_sum_val is not None else None
+        reference_corrected = (reference_raw - bg) if (reference_raw is not None and bg is not None) else None
+        test_corrected = (test_raw - bg) if (test_raw is not None and bg is not None) else None
+        reference_test_ratio = None
+        if ratio is not None and abs(ratio) > 1e-12:
+            reference_test_ratio = 1.0 / ratio
+
+        valid_strip = 1 if (test_corrected is not None and reference_corrected is not None) else 0
+        failure_reason = None
+        if not valid_strip:
+            failure_reason = vertical_crop_reason or 'line_detection_incomplete'
+        elif vertical_crop_reason and vertical_crop_reason not in ('ok', 'single_line_cropped'):
+            failure_reason = vertical_crop_reason
+
+        quality_flags = []
+        if vertical_crop_reason and vertical_crop_reason != 'ok':
+            quality_flags.append(vertical_crop_reason)
+        if bg is None:
+            quality_flags.append('missing_background')
+        if ratio is None:
+            quality_flags.append('missing_test_reference_ratio')
+        quality_flags_text = ','.join(quality_flags) if quality_flags else None
+
+        conn.execute(
+            """
+            UPDATE strip_results
+            SET
+                test_line_raw_intensity = ?,
+                reference_line_raw_intensity = ?,
+                test_line_corrected_intensity = ?,
+                reference_line_corrected_intensity = ?,
+                test_reference_ratio = ?,
+                reference_test_ratio = ?,
+                overall_membrane_background = ?,
+                ct_bg_sum = ?,
+                valid_strip = ?,
+                failure_reason = ?,
+                quality_flags = ?
+            WHERE strip_id = ?
+            """,
+            (
+                test_raw,
+                reference_raw,
+                test_corrected,
+                reference_corrected,
+                ratio,
+                reference_test_ratio,
+                bg,
+                ct_bg_sum,
+                valid_strip,
+                failure_reason,
+                quality_flags_text,
+                str(strip_id),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _redo_detail_processing(detail_id, detail_entry):
+    detail = dict(detail_entry.get('detail', {}) or {})
+    images = dict(detail.get('images', {}) or {})
+    original_path = str(images.get('manual_crop_path') or images.get('original_path') or detail_entry.get('original_path') or '').strip()
+    if not original_path:
+        raise ValueError('Original image path not found.')
+    source_path = Path(original_path)
+    if not source_path.exists():
+        raise ValueError('Original image file does not exist.')
+
+    with Image.open(source_path) as src_img:
+        original_img = src_img.convert('RGB')
+
+    gray = process_image_to_grayscale(original_img.copy())
+    analysis = analyze_library_image(gray)
+
+    gray_path = str(images.get('gray_path') or detail_entry.get('gray_path') or '')
+    cropped_path = str(images.get('cropped_path') or detail_entry.get('cropped_path') or '')
+    cropped_vertical_path = str(images.get('cropped_vertical_path') or '')
+    cropped_trimmed_path = str(images.get('cropped_trimmed_path') or '')
+    vertical_crop_path = str(images.get('vertical_crop_path') or '')
+    dark_regions_path = str(images.get('dark_regions_path') or detail_entry.get('dark_regions_path') or '')
+    recrop_path = str(images.get('recrop_path') or '')
+
+    _save_optional_image(gray, gray_path)
+    _save_optional_image(analysis.get('cropped'), cropped_path)
+    _save_optional_image(analysis.get('vertical_overlay'), cropped_vertical_path)
+    _save_optional_image(analysis.get('analysis_img_trimmed'), cropped_trimmed_path)
+    _save_optional_image(analysis.get('cropped_between'), vertical_crop_path)
+    _save_optional_image(analysis.get('cropped_overlay'), dark_regions_path)
+    _save_optional_image(analysis.get('recrop_overlay'), recrop_path)
+
+    images['gray_path'] = gray_path
+    images['cropped_path'] = cropped_path
+    images['cropped_vertical_path'] = cropped_vertical_path if Path(cropped_vertical_path).exists() else ''
+    images['cropped_trimmed_path'] = cropped_trimmed_path if Path(cropped_trimmed_path).exists() else ''
+    images['vertical_crop_path'] = vertical_crop_path if vertical_crop_path and Path(vertical_crop_path).exists() else ''
+    images['dark_regions_path'] = dark_regions_path if dark_regions_path and Path(dark_regions_path).exists() else ''
+    images['recrop_path'] = recrop_path if recrop_path and Path(recrop_path).exists() else ''
+    detail['images'] = images
+    detail['vertical_crop_reason'] = analysis.get('vertical_crop_reason', '')
+    detail['trim_percent_used'] = int(analysis.get('trim_percent_used', 20) or 20)
+    update_upload_detail(detail_id, detail)
+
+    upsert_upload_record({
+        'id': detail_id,
+        'original_name': detail_entry.get('original_name'),
+        'original_path': detail_entry.get('original_path'),
+        'gray_path': gray_path,
+        'cropped_name': detail_entry.get('cropped_name'),
+        'cropped_path': cropped_path,
+        'dark_regions_path': dark_regions_path if dark_regions_path and Path(dark_regions_path).exists() else '',
+        'starred': detail_entry.get('starred'),
+        'detail': detail,
+    })
+
+    _update_strip_results_analysis(
+        detail_id,
+        analysis.get('c'),
+        analysis.get('t'),
+        analysis.get('bg'),
+        analysis.get('ratio'),
+        analysis.get('ct_bg_sum'),
+        analysis.get('vertical_crop_reason', ''),
+    )
+
+
+def _save_manual_crop(detail_id, detail, original_img, crop_box):
+    uploads_dir = Path(__file__).parent / 'uploads'
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    output_path = uploads_dir / f'{detail_id}_manual_crop.png'
+    cropped = original_img.crop(crop_box)
+    cropped.save(output_path)
+
+    updated_detail = dict(detail or {})
+    images = dict(updated_detail.get('images', {}) or {})
+    images['manual_crop_path'] = str(output_path)
+    updated_detail['images'] = images
+    updated_detail['manual_crop_box'] = {
+        'left': int(crop_box[0]),
+        'top': int(crop_box[1]),
+        'right': int(crop_box[2]),
+        'bottom': int(crop_box[3]),
+    }
+    update_upload_detail(detail_id, updated_detail)
+
+
+def _clear_manual_crop(detail_id, detail):
+    updated_detail = dict(detail or {})
+    images = dict(updated_detail.get('images', {}) or {})
+    manual_crop_path = str(images.get('manual_crop_path') or '').strip()
+    if manual_crop_path:
+        try:
+            Path(manual_crop_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    images['manual_crop_path'] = ''
+    updated_detail['images'] = images
+    updated_detail.pop('manual_crop_box', None)
+    update_upload_detail(detail_id, updated_detail)
+
+
+def _render_original_crop_editor(detail_id, detail, original_path):
+    if not original_path:
+        return
+    p = Path(original_path)
+    if not p.exists():
+        return
+
+    with Image.open(p) as src_img:
+        original_img = src_img.convert('RGB')
+
+    width, height = original_img.size
+    saved_box = dict(detail.get('manual_crop_box', {}) or {})
+
+    st.write('Original crop editor')
+    ctrl_cols = st.columns(4)
+    left = ctrl_cols[0].slider(
+        'left',
+        min_value=0,
+        max_value=max(0, width - 1),
+        value=int(saved_box.get('left', 0)),
+        key=f'detail_crop_left_{detail_id}',
+    )
+    top = ctrl_cols[1].slider(
+        'top',
+        min_value=0,
+        max_value=max(0, height - 1),
+        value=int(saved_box.get('top', 0)),
+        key=f'detail_crop_top_{detail_id}',
+    )
+    right_min = min(width, max(left + 1, 1))
+    right_default = int(saved_box.get('right', width))
+    right_default = min(width, max(right_default, right_min))
+    right = ctrl_cols[2].slider(
+        'right',
+        min_value=right_min,
+        max_value=width,
+        value=right_default,
+        key=f'detail_crop_right_{detail_id}',
+    )
+    bottom_min = min(height, max(top + 1, 1))
+    bottom_default = int(saved_box.get('bottom', height))
+    bottom_default = min(height, max(bottom_default, bottom_min))
+    bottom = ctrl_cols[3].slider(
+        'bottom',
+        min_value=bottom_min,
+        max_value=height,
+        value=bottom_default,
+        key=f'detail_crop_bottom_{detail_id}',
+    )
+
+    crop_box = (int(left), int(top), int(right), int(bottom))
+    crop_preview = original_img.crop(crop_box)
+
+    preview_cols = st.columns([1.1, 1.1, 1.2])
+    with preview_cols[0]:
+        st.write('Original')
+        st.image(_to_uniform_canvas(original_img, 260, 260), width='stretch')
+    with preview_cols[1]:
+        st.write('Crop preview')
+        st.image(_to_uniform_canvas(crop_preview, 260, 260), width='stretch')
+    with preview_cols[2]:
+        st.write(f'Crop box: {crop_box}')
+        save_clicked = st.button('Save crop', key=f'detail_save_crop_{detail_id}', width='content')
+        clear_clicked = st.button('Clear crop', key=f'detail_clear_crop_{detail_id}', width='content')
+        if save_clicked:
+            try:
+                _save_manual_crop(detail_id, detail, original_img, crop_box)
+                st.success('Manual crop saved.')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Failed to save manual crop: {e}')
+        if clear_clicked:
+            try:
+                _clear_manual_crop(detail_id, detail)
+                st.success('Manual crop cleared.')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Failed to clear manual crop: {e}')
+
+
 def render_insight_detail_page(detail_id):
     st.subheader(f'Result Detail - ID {detail_id}')
     if st.button('Back to Results', key='back_to_insights'):
@@ -185,39 +443,8 @@ def render_insight_detail_page(detail_id):
     detail = detail_entry.get('detail', {})
     images = detail.get('images', {})
     vertical_crop_reason = detail.get('vertical_crop_reason', '')
-
-    show_paths = [
-        ('1. Original', images.get('original_path', detail_entry.get('original_path', ''))),
-        ('2. Grayscale', images.get('gray_path', detail_entry.get('gray_path', ''))),
-        ('3. Cropped', images.get('cropped_path', detail_entry.get('cropped_path', ''))),
-        ('4. Cropped Vertical Overlay', images.get('cropped_vertical_path', images.get('cropped_path', detail_entry.get('cropped_path', '')))),
-        ('5. Vertical Crop (Length Limited)', images.get('vertical_crop_path', '')),
-        ('6. Cropped (Top/Bottom 20% Removed)', images.get('cropped_trimmed_path', '')),
-        ('7. Dark Regions Overlay', images.get('dark_regions_path', detail_entry.get('dark_regions_path', ''))),
-        ('8. Re-Crop Overlay', images.get('recrop_path', '')),
-    ]
-    cols = st.columns(3)
-    col_idx = 0
-    for caption, img_path in show_paths:
-        if not img_path:
-            if caption.startswith('5. Vertical Crop'):
-                reason_map = {
-                    'only_one_vertical_line': 'Vertical crop not generated: only one vertical line detected.',
-                    'no_vertical_lines': 'Vertical crop not generated: no vertical lines detected.',
-                    'width_insufficient': 'Vertical crop not generated: width between two lines is insufficient.',
-                    'single_line_width_insufficient': 'Vertical crop not generated: single detected line width is insufficient.',
-                }
-                if vertical_crop_reason in reason_map:
-                    st.info(reason_map[vertical_crop_reason])
-            continue
-        p = Path(img_path)
-        if not p.exists():
-            continue
-        with cols[col_idx % 3]:
-            img = Image.open(p)
-            st.write(caption)
-            st.image(_to_uniform_canvas(img, 260, 260), width='stretch')
-        col_idx += 1
+    trim_percent_used = int(detail.get('trim_percent_used', 20) or 20)
+    original_path = images.get('original_path', detail_entry.get('original_path', ''))
 
     sync_experiment_db()
     strip_row = None
@@ -299,3 +526,49 @@ def render_insight_detail_page(detail_id):
             )
     else:
         st.info('No experiments record linked to this image.')
+
+    action_cols = st.columns([1, 1, 4])
+    with action_cols[0]:
+        if st.button('Redo', key=f'detail_redo_{detail_id}', width='content'):
+            try:
+                _redo_detail_processing(detail_id, detail_entry)
+                st.success('Image analysis redone.')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Failed to redo image analysis: {e}')
+
+    _render_original_crop_editor(detail_id, detail, original_path)
+
+    show_paths = [
+        ('1. Original', original_path),
+        ('1b. Manual Crop', images.get('manual_crop_path', '')),
+        ('2. Grayscale', images.get('gray_path', detail_entry.get('gray_path', ''))),
+        ('3. Cropped', images.get('cropped_path', detail_entry.get('cropped_path', ''))),
+        ('4. Cropped Vertical Overlay', images.get('cropped_vertical_path', images.get('cropped_path', detail_entry.get('cropped_path', '')))),
+        ('5. Vertical Crop (Length Limited)', images.get('vertical_crop_path', '')),
+        (f'6. Cropped (Top/Bottom {trim_percent_used}% Removed)', images.get('cropped_trimmed_path', '')),
+        ('7. Dark Regions Overlay', images.get('dark_regions_path', detail_entry.get('dark_regions_path', ''))),
+        ('8. Re-Crop Overlay', images.get('recrop_path', '')),
+    ]
+    cols = st.columns(3)
+    col_idx = 0
+    for caption, img_path in show_paths:
+        if not img_path:
+            if caption.startswith('5. Vertical Crop'):
+                reason_map = {
+                    'only_one_vertical_line': 'Vertical crop not generated: only one vertical line detected.',
+                    'no_vertical_lines': 'Vertical crop not generated: no vertical lines detected.',
+                    'width_insufficient': 'Vertical crop not generated: width between two lines is insufficient.',
+                    'single_line_width_insufficient': 'Vertical crop not generated: single detected line width is insufficient.',
+                }
+                if vertical_crop_reason in reason_map:
+                    st.info(reason_map[vertical_crop_reason])
+            continue
+        p = Path(img_path)
+        if not p.exists():
+            continue
+        with cols[col_idx % 3]:
+            img = Image.open(p)
+            st.write(caption)
+            st.image(_to_uniform_canvas(img, 260, 260), width='stretch')
+        col_idx += 1

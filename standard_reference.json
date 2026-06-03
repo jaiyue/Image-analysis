@@ -1,6 +1,6 @@
 {
   "source_image": "/Users/helen/Desktop/Image-analysis/image.png",
-  "saved_at": "2026-06-02T14:04:02",
+  "saved_at": "2026-06-03T10:22:19",
   "box_count": 10,
   "values": [
     {
@@ -8,30 +8,30 @@
       "x_start": 39,
       "x_end": 46,
       "gray_avg": 169.62,
-      "predicted_gray_avg": 168.31,
-      "corrected_gray_avg": 168.7,
+      "predicted_gray_avg": 166.83,
+      "corrected_gray_avg": 167.67,
       "exp_component": 167.13,
-      "epsilon": 1.19
+      "epsilon": -0.29
     },
     {
       "id": 2,
       "x_start": 70,
       "x_end": 77,
       "gray_avg": 138.37,
-      "predicted_gray_avg": 170.61,
-      "corrected_gray_avg": 160.94,
+      "predicted_gray_avg": 173.78,
+      "corrected_gray_avg": 163.16,
       "exp_component": 170.78,
-      "epsilon": -0.17
+      "epsilon": 3.0
     },
     {
       "id": 3,
       "x_start": 101,
       "x_end": 108,
       "gray_avg": 176.32,
-      "predicted_gray_avg": 173.78,
-      "corrected_gray_avg": 174.54,
+      "predicted_gray_avg": 175.88,
+      "corrected_gray_avg": 176.01,
       "exp_component": 174.52,
-      "epsilon": -0.74
+      "epsilon": 1.36
     },
     {
       "id": 4,

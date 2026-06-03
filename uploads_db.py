@@ -452,3 +452,19 @@ def get_upload_detail_by_id(detail_id):
         return data
     finally:
         conn.close()
+
+
+def update_upload_detail(record_id, detail):
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """
+            UPDATE upload_records
+            SET detail_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(detail or {}, ensure_ascii=False), str(record_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
