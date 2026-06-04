@@ -1193,6 +1193,7 @@ def _render_experiment_selector():
                 except Exception as e:
                     st.error(f'Failed to save experiment: {e}')
     else:
+        st.write('Exist experiment')
         date_options = _load_experiment_date_options()
         date_placeholder = 'Choose date(Optional)'
         today_text = date.today().isoformat()

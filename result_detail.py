@@ -179,6 +179,20 @@ def _save_optional_image(img, path_str):
     img.save(path)
 
 
+def _detail_output_paths(detail_id, detail_entry, images):
+    uploads_dir = Path(__file__).parent / 'uploads'
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        'gray_path': str(images.get('gray_path') or detail_entry.get('gray_path') or (uploads_dir / f'{detail_id}_gray.png')),
+        'cropped_path': str(images.get('cropped_path') or detail_entry.get('cropped_path') or (uploads_dir / f'{detail_id}_cropped.png')),
+        'cropped_vertical_path': str(images.get('cropped_vertical_path') or (uploads_dir / f'{detail_id}_cropped_vertical.png')),
+        'cropped_trimmed_path': str(images.get('cropped_trimmed_path') or (uploads_dir / f'{detail_id}_cropped_trimmed.png')),
+        'vertical_crop_path': str(images.get('vertical_crop_path') or (uploads_dir / f'{detail_id}_vertical_crop.png')),
+        'dark_regions_path': str(images.get('dark_regions_path') or detail_entry.get('dark_regions_path') or (uploads_dir / f'{detail_id}_dark_regions.png')),
+        'recrop_path': str(images.get('recrop_path') or (uploads_dir / f'{detail_id}_recrop.png')),
+    }
+
+
 def _update_strip_results_analysis(strip_id, c_val, t_val, bg_val, ratio_val, ct_bg_sum_val, vertical_crop_reason):
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -262,13 +276,14 @@ def _redo_detail_processing(detail_id, detail_entry):
     gray = process_image_to_grayscale(original_img.copy())
     analysis = analyze_library_image(gray)
 
-    gray_path = str(images.get('gray_path') or detail_entry.get('gray_path') or '')
-    cropped_path = str(images.get('cropped_path') or detail_entry.get('cropped_path') or '')
-    cropped_vertical_path = str(images.get('cropped_vertical_path') or '')
-    cropped_trimmed_path = str(images.get('cropped_trimmed_path') or '')
-    vertical_crop_path = str(images.get('vertical_crop_path') or '')
-    dark_regions_path = str(images.get('dark_regions_path') or detail_entry.get('dark_regions_path') or '')
-    recrop_path = str(images.get('recrop_path') or '')
+    output_paths = _detail_output_paths(detail_id, detail_entry, images)
+    gray_path = output_paths['gray_path']
+    cropped_path = output_paths['cropped_path']
+    cropped_vertical_path = output_paths['cropped_vertical_path']
+    cropped_trimmed_path = output_paths['cropped_trimmed_path']
+    vertical_crop_path = output_paths['vertical_crop_path']
+    dark_regions_path = output_paths['dark_regions_path']
+    recrop_path = output_paths['recrop_path']
 
     _save_optional_image(gray, gray_path)
     _save_optional_image(analysis.get('cropped'), cropped_path)
