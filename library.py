@@ -96,6 +96,35 @@ EXPERIMENT_FIELD_SPECS = [
     {'ui': 'experiment_notes', 'db': 'experiment_notes', 'kind': 'text'},
 ]
 
+
+def _should_auto_star(analysis):
+    return int(analysis.get('recrop_results_count', 0) or 0) != 2
+
+
+def _normalize_cell_value(v):
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+    return v
+
+
+def _update_experiment_row(conn, row_dict):
+    if not row_dict or 'experiment_id' not in row_dict:
+        return
+    pk_value = row_dict.get('experiment_id')
+    set_cols = [c for c in row_dict.keys() if c != 'experiment_id']
+    if not set_cols:
+        return
+    set_sql = ', '.join([f'"{c}" = ?' for c in set_cols])
+    values = [_normalize_cell_value(row_dict.get(c)) for c in set_cols]
+    values.append(pk_value)
+    conn.execute(
+        f'UPDATE "experiments" SET {set_sql} WHERE "experiment_id" = ?',
+        values,
+    )
+
 OPTIONAL_EXPERIMENT_FIELDS = {
     'stability_timepoint',
     'experiment_notes',
@@ -380,16 +409,51 @@ def _load_existing_image_ids():
     return ids
 
 
+def _load_existing_image_names():
+    names = set()
+
+    if not EXPERIMENT_DB_PATH.exists():
+        return names
+
+    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+    try:
+        rows = conn.execute(
+            """
+            SELECT original_name
+            FROM upload_records
+            WHERE original_name IS NOT NULL
+              AND TRIM(original_name) != ''
+            """
+        ).fetchall()
+        for r in rows:
+            names.add(str(r[0]).strip())
+
+        rows = conn.execute(
+            """
+            SELECT image_filename
+            FROM strip_results
+            WHERE image_filename IS NOT NULL
+              AND TRIM(image_filename) != ''
+            """
+        ).fetchall()
+        for r in rows:
+            names.add(str(r[0]).strip())
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    return names
+
+
 def _next_image_id(existing_ids):
-    max_n = 0
+    normalized_ids = set()
     for sid in existing_ids:
         s = str(sid).strip()
         if s.isdigit():
-            n = int(s)
-            if n > max_n:
-                max_n = n
-    candidate = max_n + 1
-    while f'{candidate:05d}' in existing_ids:
+            normalized_ids.add(f'{int(s):05d}')
+    candidate = 1
+    while f'{candidate:05d}' in normalized_ids:
         candidate += 1
     return f'{candidate:05d}'
 
@@ -780,6 +844,20 @@ def _selectbox_with_state(container, label, options, key, default_index=0, forma
     if key not in st.session_state:
         kwargs['index'] = default_index
     return container.selectbox(**kwargs)
+
+
+def _multiselect_with_state(container, label, options, key, default_values=None, placeholder=None, label_visibility='visible'):
+    kwargs = {
+        'label': label,
+        'options': options,
+        'key': key,
+        'label_visibility': label_visibility,
+    }
+    if placeholder is not None:
+        kwargs['placeholder'] = placeholder
+    if key not in st.session_state:
+        kwargs['default'] = list(default_values or [])
+    return container.multiselect(**kwargs)
 
 
 def _text_input_with_state(container, label, key, default_value='', placeholder=''):
@@ -1193,19 +1271,29 @@ def _render_experiment_selector():
                 except Exception as e:
                     st.error(f'Failed to save experiment: {e}')
     else:
-        st.write('Exist experiment')
         date_options = _load_experiment_date_options()
+        title_options = _load_experiment_title_options()
         date_placeholder = 'Choose date(Optional)'
         today_text = date.today().isoformat()
         existing_date_options = [date_placeholder] + date_options
         default_date_index = existing_date_options.index(today_text) if today_text in existing_date_options else 0
         with mode_row[1]:
+            filter_cols = st.columns([1, 1.2])
             selected_date = _selectbox_with_state(
-                st,
+                filter_cols[0],
                 'experiment date filter',
                 existing_date_options,
                 key='library_existing_experiment_date_filter',
                 default_index=default_date_index,
+                label_visibility='collapsed',
+            )
+            selected_titles = _multiselect_with_state(
+                filter_cols[1],
+                'experiment title filter',
+                title_options,
+                key='library_existing_experiment_title_filter',
+                default_values=[],
+                placeholder='Experiment title',
                 label_visibility='collapsed',
             )
 
@@ -1229,6 +1317,12 @@ def _render_experiment_selector():
             exp_df = exp_df[exp_df['experiment_date'].astype(str) == selected_date]
             if exp_df.empty:
                 st.info('No experiments matched the selected date.')
+                return
+        if selected_titles and 'experiment_title' in exp_df.columns:
+            selected_title_set = {str(v).strip() for v in selected_titles if str(v).strip()}
+            exp_df = exp_df[exp_df['experiment_title'].astype(str).isin(selected_title_set)]
+            if exp_df.empty:
+                st.info('No experiments matched the selected title filter.')
                 return
 
         existing_selected_id = st.session_state.get('library_selected_experiment_id')
@@ -1257,9 +1351,52 @@ def _render_experiment_selector():
         display_df.insert(0, 'select', display_df['experiment_id'] == selected_id)
 
         editor_nonce = int(st.session_state.get('library_existing_experiment_editor_nonce', 0))
+        edit_key = 'library_existing_experiment_edit_mode'
+        prev_edit_key = 'library_existing_experiment_prev_edit_mode'
+        cache_key = 'library_existing_experiment_editor_cache'
+        prev_edit_mode = bool(st.session_state.get(prev_edit_key, False))
+        header_cols = st.columns([1.15, 0.85, 6])
+        header_cols[0].write('Exist experiment')
+        edit_mode = header_cols[1].toggle('Edit table', key=edit_key)
+        st.session_state[prev_edit_key] = bool(edit_mode)
         pending_remove_ids = st.session_state.get('library_pending_remove_experiment_ids', [])
         if pending_remove_ids:
             _confirm_delete_experiments_dialog(pending_remove_ids)
+
+        if prev_edit_mode and not edit_mode:
+            edited_cache_df = st.session_state.get(cache_key)
+            if edited_cache_df is not None and not edited_cache_df.empty:
+                try:
+                    conn = sqlite3.connect(EXPERIMENT_DB_PATH)
+                    for _, row in edited_cache_df.iterrows():
+                        row_dict = {
+                            k: _normalize_cell_value(v)
+                            for k, v in row.to_dict().items()
+                            if k not in ('select', 'remove')
+                        }
+                        _update_experiment_row(conn, row_dict)
+                    conn.commit()
+                    st.success('Experiment table changes saved.')
+                    exp_df = _load_experiments_df()
+                    if selected_date != date_placeholder and 'experiment_date' in exp_df.columns:
+                        exp_df = exp_df[exp_df['experiment_date'].astype(str) == selected_date]
+                    if selected_titles and 'experiment_title' in exp_df.columns:
+                        selected_title_set = {str(v).strip() for v in selected_titles if str(v).strip()}
+                        exp_df = exp_df[exp_df['experiment_title'].astype(str).isin(selected_title_set)]
+                    display_df = exp_df.copy()
+                    if schema_order:
+                        display_df = display_df[schema_order]
+                    display_df.insert(0, 'remove', False)
+                    display_df.insert(0, 'select', display_df['experiment_id'] == selected_id)
+                    editor_nonce += 1
+                    st.session_state['library_existing_experiment_editor_nonce'] = editor_nonce
+                except Exception as e:
+                    st.error(f'Failed to save experiment table changes: {e}')
+                finally:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
         col_config = {
             'select': st.column_config.CheckboxColumn('select', width='small'),
@@ -1276,8 +1413,14 @@ def _render_experiment_selector():
             width='stretch',
             key=f'library_existing_experiment_editor_{editor_nonce}',
             column_config=col_config,
-            disabled=[c for c in display_df.columns if c not in ('select', 'remove')],
+            disabled=(
+                ['experiment_id']
+                if edit_mode
+                else [c for c in display_df.columns if c not in ('select', 'remove')]
+            ),
         )
+        if edit_mode:
+            st.session_state[cache_key] = edited.copy()
 
         remove_rows = edited[edited['remove'] == True]  # noqa: E712
         if not remove_rows.empty:
@@ -1390,8 +1533,6 @@ def render_library_page():
         st.session_state['library_id_counter'] = 0
     if 'library_file_ids' not in st.session_state:
         st.session_state['library_file_ids'] = {}
-    if 'library_reserved_ids' not in st.session_state:
-        st.session_state['library_reserved_ids'] = _load_existing_image_ids()
     if 'library_preprocess_cache' not in st.session_state:
         st.session_state['library_preprocess_cache'] = {}
     if st.session_state.get('library_preprocess_cache_version') != PREPROCESS_CACHE_VERSION:
@@ -1406,8 +1547,22 @@ def render_library_page():
         st.info('No files uploaded yet. Use the uploader to add images or CSVs.')
         return
 
+    current_file_sigs = {
+        f"{uploaded.name}::{getattr(uploaded, 'size', None)}"
+        for uploaded in uploaded_files
+        if not (uploaded.name.lower().endswith('.csv') or uploaded.type == 'text/csv')
+    }
+    st.session_state['library_file_ids'] = {
+        sig: image_id
+        for sig, image_id in st.session_state['library_file_ids'].items()
+        if sig in current_file_sigs
+    }
+
     images = []
     tables = []
+    existing_image_names = _load_existing_image_names()
+    batch_seen_names = set()
+    reserved_ids = _load_existing_image_ids().union(set(st.session_state['library_file_ids'].values()))
 
     for uploaded in uploaded_files:
         name = uploaded.name
@@ -1418,6 +1573,14 @@ def render_library_page():
             except Exception as e:
                 st.warning(f'Could not read CSV {name}: {e}')
         else:
+            clean_name = str(name).strip()
+            if clean_name in batch_seen_names:
+                st.warning(f'Image name already exists in current upload: {clean_name}')
+                continue
+            if clean_name in existing_image_names:
+                st.warning(f'Image name already exists: {clean_name}')
+                continue
+            batch_seen_names.add(clean_name)
             if Image is None:
                 st.warning('Pillow is not available: cannot display images.')
                 break
@@ -1425,11 +1588,9 @@ def render_library_page():
                 file_size = getattr(uploaded, 'size', None)
                 file_sig = f"{name}::{file_size}"
                 if file_sig not in st.session_state['library_file_ids']:
-                    existing_ids = set(st.session_state.get('library_reserved_ids', set()))
-                    next_id = _next_image_id(existing_ids)
+                    next_id = _next_image_id(reserved_ids)
                     st.session_state['library_file_ids'][file_sig] = next_id
-                    existing_ids.add(next_id)
-                    st.session_state['library_reserved_ids'] = existing_ids
+                    reserved_ids.add(next_id)
                 img_id = st.session_state['library_file_ids'][file_sig]
                 prep_cache = st.session_state['library_preprocess_cache']
                 if file_sig in prep_cache:
@@ -1475,7 +1636,8 @@ def render_library_page():
             selected_changed_field = changed_options[0]
         st.session_state['library_changed_field'] = selected_changed_field
 
-        for img_id, name, img, gray, enhanced, black_white, image_dt, file_sig in images:
+        for row_idx, (img_id, name, img, gray, enhanced, black_white, image_dt, file_sig) in enumerate(images):
+            row_key = f'{img_id}_{row_idx}'
             cropped_overlay = None
             recrop_overlay = None
             c_val = None
@@ -1483,21 +1645,6 @@ def render_library_page():
             bg_val = None
             ratio_val = None
             ct_bg_sum_val = None
-            cols = st.columns([1, 2, 4])
-            with cols[0]:
-                is_starred = get_starred_status(img_id)
-                mark_col, id_col = st.columns([1, 3])
-                with mark_col:
-                    if st.button(
-                        _build_star_button_label(is_starred),
-                        key=f'lib_star_{img_id}',
-                        width='content',
-                        type='tertiary',
-                    ):
-                        set_starred_status(img_id, not is_starred)
-                with id_col:
-                    st.markdown(f"ID\n\n`{img_id}`")
-
             analysis_key = f'{ANALYSIS_CACHE_VERSION}::{file_sig}'
             analysis_cache = st.session_state['library_analysis_cache']
             if analysis_key in analysis_cache:
@@ -1519,6 +1666,25 @@ def render_library_page():
             ct_bg_sum_val = analysis.get("ct_bg_sum")
             vertical_crop_reason = analysis["vertical_crop_reason"]
             trim_percent_used = analysis.get("trim_percent_used", 20)
+            auto_starred = _should_auto_star(analysis)
+            stored_starred = get_starred_status(img_id)
+            effective_starred = bool(stored_starred or auto_starred)
+
+            cols = st.columns([1, 2, 4])
+            with cols[0]:
+                mark_col, id_col = st.columns([1, 3])
+                with mark_col:
+                    if st.button(
+                        _build_star_button_label(effective_starred),
+                        key=f'lib_star_{row_key}',
+                        width='content',
+                        type='tertiary',
+                    ):
+                        stored_starred = not effective_starred
+                        set_starred_status(img_id, stored_starred)
+                        effective_starred = bool(stored_starred or auto_starred)
+                with id_col:
+                    st.markdown(f"ID\n\n`{img_id}`")
 
             if recrop_overlay is not None:
                 with cols[1]:
@@ -1544,12 +1710,12 @@ def render_library_page():
 
             image_changed_value = cols[2].text_input(
                 f'{_display_label(selected_changed_field)} *',
-                key=f'library_img_changed_value_{selected_changed_field}_{img_id}',
+                key=f'library_img_changed_value_{selected_changed_field}_{row_key}',
                 placeholder='not empty',
             )
             save_image_clicked = cols[2].button(
                 'Save',
-                key=f'library_save_image_{img_id}',
+                key=f'library_save_image_{row_key}',
                 width='content',
             )
 
@@ -1600,6 +1766,7 @@ def render_library_page():
                     },
                     'vertical_crop_reason': vertical_crop_reason,
                     'trim_percent_used': trim_percent_used,
+                    'recrop_results_count': int(analysis.get('recrop_results_count', 0) or 0),
                 }
                 entry = {
                     'id': img_id,
@@ -1609,7 +1776,7 @@ def render_library_page():
                     'cropped_name': cropped_filename,
                     'cropped_path': str(cropped_path),
                     'dark_regions_path': str(dark_path) if cropped_overlay is not None else '',
-                    'starred': 1 if is_starred else 0,
+                    'starred': 1 if effective_starred else 0,
                     'detail': detail_payload,
                 }
                 upsert_upload_record(entry)

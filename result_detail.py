@@ -42,6 +42,10 @@ STRIP_RESULTS_DISPLAY_FIELDS = [
 ]
 
 
+def _should_auto_star(analysis):
+    return int(analysis.get('recrop_results_count', 0) or 0) != 2
+
+
 def _resize_to_height(img, target_h=260):
     if img.height <= 0 or target_h <= 0:
         return img
@@ -260,6 +264,65 @@ def _update_strip_results_analysis(strip_id, c_val, t_val, bg_val, ratio_val, ct
         conn.close()
 
 
+def _delete_strip_result(strip_id):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            'DELETE FROM strip_results WHERE strip_id = ?',
+            (str(strip_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _delete_upload_record_and_files(record_id):
+    record_id = str(record_id)
+    upload_entry = get_upload_detail_by_id(record_id)
+    file_candidates = []
+    if upload_entry:
+        for path_value in (
+            upload_entry.get('original_path'),
+            upload_entry.get('gray_path'),
+            upload_entry.get('cropped_path'),
+            upload_entry.get('dark_regions_path'),
+        ):
+            if path_value:
+                file_candidates.append(Path(path_value))
+        detail = dict(upload_entry.get('detail', {}) or {})
+        images = dict(detail.get('images', {}) or {})
+        for path_value in images.values():
+            if path_value:
+                file_candidates.append(Path(str(path_value)))
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            'DELETE FROM upload_records WHERE id = ?',
+            (record_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    uploads_dir = Path(__file__).parent / 'uploads'
+    file_candidates.extend(uploads_dir.glob(f'{record_id}_*'))
+    seen_paths = set()
+    for path_obj in file_candidates:
+        try:
+            resolved = path_obj.resolve()
+        except Exception:
+            resolved = path_obj
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        try:
+            if path_obj.exists() and path_obj.is_file():
+                path_obj.unlink()
+        except Exception:
+            pass
+
+
 def _redo_detail_processing(detail_id, detail_entry):
     detail = dict(detail_entry.get('detail', {}) or {})
     images = dict(detail.get('images', {}) or {})
@@ -303,7 +366,10 @@ def _redo_detail_processing(detail_id, detail_entry):
     detail['images'] = images
     detail['vertical_crop_reason'] = analysis.get('vertical_crop_reason', '')
     detail['trim_percent_used'] = int(analysis.get('trim_percent_used', 20) or 20)
+    detail['recrop_results_count'] = int(analysis.get('recrop_results_count', 0) or 0)
     update_upload_detail(detail_id, detail)
+
+    effective_starred = bool(detail_entry.get('starred') or _should_auto_star(analysis))
 
     upsert_upload_record({
         'id': detail_id,
@@ -313,7 +379,7 @@ def _redo_detail_processing(detail_id, detail_entry):
         'cropped_name': detail_entry.get('cropped_name'),
         'cropped_path': cropped_path,
         'dark_regions_path': dark_regions_path if dark_regions_path and Path(dark_regions_path).exists() else '',
-        'starred': detail_entry.get('starred'),
+        'starred': 1 if effective_starred else 0,
         'detail': detail,
     })
 
@@ -542,7 +608,7 @@ def render_insight_detail_page(detail_id):
     else:
         st.info('No experiments record linked to this image.')
 
-    action_cols = st.columns([1, 1, 4])
+    action_cols = st.columns([1, 1, 1, 3])
     with action_cols[0]:
         if st.button('Redo', key=f'detail_redo_{detail_id}', width='content'):
             try:
@@ -551,6 +617,15 @@ def render_insight_detail_page(detail_id):
                 st.rerun()
             except Exception as e:
                 st.error(f'Failed to redo image analysis: {e}')
+    with action_cols[1]:
+        if st.button('Delete', key=f'detail_delete_{detail_id}', width='content'):
+            try:
+                _delete_strip_result(detail_id)
+                _delete_upload_record_and_files(detail_id)
+                st.query_params.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f'Failed to delete strip result: {e}')
 
     _render_original_crop_editor(detail_id, detail, original_path)
 
