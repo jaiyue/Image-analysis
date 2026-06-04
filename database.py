@@ -6,9 +6,12 @@ import json
 import pandas as pd
 import streamlit as st
 
+from ui_labels import display_label, table_label
+
 
 DB_PATH = Path(__file__).parent / 'experiment_data.db'
 REMOVE_ICON_PATH = Path(__file__).parent / 'assets' / 'remove.png'
+SOURCE_INDEX_COL = '_source_index'
 SCHEMA_PATH = Path(__file__).parent / 'experiment_schema.sql'
 
 REAGENT_TYPE_OPTIONS = [
@@ -21,7 +24,7 @@ REAGENT_TYPE_OPTIONS = [
 ]
 
 def _display_label(text):
-    return str(text).replace('_', ' ')
+    return display_label(text)
 
 PAD_TYPE_OPTIONS = [
     'nitrocellulose_material',
@@ -32,18 +35,12 @@ PAD_TYPE_OPTIONS = [
 
 
 def _table_display_name(table_name):
-    if table_name == 'reagent_lots':
-        return 'reagent lots'
-    if table_name == 'pad_material':
-        return 'material'
-    if table_name == 'conjugate_batch':
-        return 'conjugate batch'
-    return _display_label(table_name)
+    return table_label(table_name)
 
 
 def _column_display_name(table_name, col_name):
     if table_name == 'pad_material' and col_name == 'pad_name':
-        return 'name'
+        return 'Material name'
     return _display_label(col_name)
 
 AUTO_GENERATED_FIELDS = {
@@ -57,7 +54,10 @@ AUTO_GENERATED_FIELDS = {
 DEFAULT_INPUT_VALUES = {
     ('experiments', 'operator'): 'A.Li',
     ('reagent_lots', 'prepared_by'): 'A.Li',
+    ('reagent_lots', 'active'): '1',
     ('pad_material', 'prepared_by'): 'A.Li',
+    ('pad_material', 'active'): '1',
+    ('conjugate_batch', 'active'): '1',
 }
 
 UI_HIDDEN_FIELDS = {
@@ -464,6 +464,17 @@ def ensure_core_schema(conn):
         _schema_columns('conjugate_batch'),
         _schema_foreign_keys('conjugate_batch'),
     )
+    for table_name in ('reagent_lots', 'pad_material', 'conjugate_batch'):
+        if _table_exists(conn, table_name):
+            cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()}
+            if 'active' in cols:
+                conn.execute(
+                    f"""
+                    UPDATE "{table_name}"
+                    SET active = 1
+                    WHERE active IS NULL
+                    """
+                )
     _ensure_table_schema(
         conn,
         'upload_records',
@@ -668,6 +679,12 @@ def _delete_row_by_pk(conn, table_name, pk_payload):
     conn.commit()
 
 
+def _sqlite_value(value):
+    if hasattr(value, 'item'):
+        return value.item()
+    return value
+
+
 def _update_row_by_pk(conn, table_name, pk_payload, values_by_col):
     if not pk_payload:
         raise ValueError('Primary key not found for update.')
@@ -676,11 +693,77 @@ def _update_row_by_pk(conn, table_name, pk_payload, values_by_col):
     set_sql = ', '.join([f'"{k}" = ?' for k in values_by_col.keys()])
     where_sql = ' AND '.join([f'"{k}" = ?' for k in pk_payload.keys()])
     query = f'UPDATE "{table_name}" SET {set_sql} WHERE {where_sql}'
-    conn.execute(query, list(values_by_col.values()) + list(pk_payload.values()))
+    params = [_sqlite_value(v) for v in values_by_col.values()] + [_sqlite_value(v) for v in pk_payload.values()]
+    cursor = conn.execute(query, params)
     conn.commit()
+    if cursor.rowcount == 0:
+        raise ValueError(f'No matching row found in {_table_display_name(table_name)}.')
+
+
+@st.dialog('Confirm remove')
+def _confirm_delete_rows_dialog():
+    pending = st.session_state.get('db_pending_delete_rows') or {}
+    table_name = pending.get('table_name')
+    pk_payloads = pending.get('pk_payloads') or []
+    labels = pending.get('labels') or []
+
+    if not table_name or not pk_payloads:
+        st.info('No rows selected for removal.')
+        if st.button('Close', key='db_delete_dialog_close'):
+            st.session_state.pop('db_pending_delete_rows', None)
+            st.rerun()
+        return
+
+    st.write(f'This will permanently remove {len(pk_payloads)} row(s) from {_table_display_name(table_name)}.')
+    if labels:
+        st.write(', '.join(labels[:8]) + (f' (+{len(labels) - 8} more)' if len(labels) > 8 else ''))
+
+    confirm_col, cancel_col = st.columns(2)
+    with confirm_col:
+        if st.button('Confirm remove', key='db_confirm_delete_rows', width='stretch'):
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                for pk_payload in pk_payloads:
+                    _delete_row_by_pk(conn, table_name, pk_payload)
+                st.session_state.pop('db_pending_delete_rows', None)
+                st.success(f'Removed {len(pk_payloads)} row(s).')
+                st.rerun()
+            except Exception as e:
+                st.error(f'Failed to remove rows: {e}')
+            finally:
+                conn.close()
+    with cancel_col:
+        if st.button('Cancel', key='db_cancel_delete_rows', width='stretch'):
+            st.session_state.pop('db_pending_delete_rows', None)
+            st.rerun()
+
+
+def _build_pending_delete_rows(selected_table, edited_df, df, pk_names):
+    pending_delete_payloads = []
+    pending_delete_labels = []
+    for row_idx, edited_row in edited_df.iterrows():
+        if not bool(edited_row.get('Remove', False)):
+            continue
+        source_idx = edited_row.get(SOURCE_INDEX_COL, row_idx)
+        if source_idx not in df.index:
+            continue
+        pk_payload = {pk_name: df.loc[source_idx, pk_name] for pk_name in pk_names if pk_name in df.columns}
+        pending_delete_payloads.append(pk_payload)
+        label_parts = []
+        for label_col in ('lot_name', 'pad_name', 'conjugate_batch_name'):
+            if label_col in df.columns:
+                label_value = str(df.loc[source_idx, label_col] or '').strip()
+                if label_value:
+                    label_parts.append(label_value)
+        pending_delete_labels.append(' / '.join(label_parts) if label_parts else str(pk_payload))
+    return pending_delete_payloads, pending_delete_labels
 
 
 def _convert_input(raw, col_type):
+    if isinstance(raw, bool):
+        return 1 if raw else 0
+    if raw is None:
+        return None
     text = (raw or '').strip()
     if text == '':
         return None
@@ -744,6 +827,9 @@ def render_database_page():
             index=0,
             format_func=_table_display_name,
         )
+        pending_delete = st.session_state.get('db_pending_delete_rows')
+        if pending_delete and pending_delete.get('table_name') == selected_table:
+            _confirm_delete_rows_dialog()
 
         columns = _get_table_columns(conn, selected_table)
         input_columns = [
@@ -772,7 +858,7 @@ def render_database_page():
 
                 label = _column_display_name(selected_table, col_name) + (' *' if required else '')
                 default_value = DEFAULT_INPUT_VALUES.get((selected_table, col_name), '')
-                placeholder = 'not empty' if required else ''
+                placeholder = 'Required' if required else 'Optional'
 
                 with cols_ui[offset]:
                     if selected_table == 'reagent_lots' and col_name == 'reagent_type':
@@ -792,7 +878,7 @@ def render_database_page():
                         reagent_type_selected = selected_option
                         if selected_option == 'Custom...':
                             custom_val = st.text_input(
-                                'custom reagent_type',
+                                'Custom reagent type',
                                 value=default_value if default_option == 'Custom...' else '',
                                 key=f'{selected_table}_{col_name}_custom_input',
                             )
@@ -817,7 +903,7 @@ def render_database_page():
                         pad_type_selected = selected_option
                         if selected_option == 'Custom...':
                             custom_val = st.text_input(
-                                'custom type',
+                                'Custom material type',
                                 value=default_value if default_option == 'Custom...' else '',
                                 key=f'{selected_table}_{col_name}_custom_input',
                             )
@@ -825,6 +911,12 @@ def render_database_page():
                             input_values[col_name] = custom_val
                         else:
                             input_values[col_name] = selected_option
+                    elif col_name == 'active':
+                        input_values[col_name] = st.checkbox(
+                            label,
+                            value=str(default_value).strip() not in ('0', 'False', 'false'),
+                            key=f'{selected_table}_{col_name}_input',
+                        )
                     else:
                         input_values[col_name] = st.text_input(
                             label,
@@ -872,7 +964,7 @@ def render_database_page():
                 try:
                     converted = _convert_input(raw, col['type'])
                 except ValueError:
-                    convert_errors.append(f'{name} expects {col["type"]}')
+                    convert_errors.append(f'{_column_display_name(selected_table, name)} expects {col["type"]}')
                     continue
                 if converted is None:
                     continue
@@ -880,7 +972,7 @@ def render_database_page():
 
             if missing:
                 missing_labels = [_column_display_name(selected_table, n) for n in missing]
-                st.error(f'Not empty required: {", ".join(missing_labels)}')
+                st.error('Required fields are missing: ' + ', '.join(missing_labels))
             elif convert_errors:
                 st.error('; '.join(convert_errors))
             elif not payload:
@@ -893,7 +985,7 @@ def render_database_page():
                             parts = [p.strip() for p in raw_name.replace('，', ',').split(',')]
                             lot_names = [p for p in parts if p != '']
                             if not lot_names:
-                                st.error('lot_name is empty.')
+                                st.error('Lot name is required.')
                                 return
                             inserted_n = 0
                             failed = []
@@ -921,7 +1013,7 @@ def render_database_page():
                             parts = [p.strip() for p in raw_name.replace('，', ',').split(',')]
                             pad_names = [p for p in parts if p != '']
                             if not pad_names:
-                                st.error('pad_name is empty.')
+                                st.error('Material name is required.')
                                 return
                             inserted_n = 0
                             failed = []
@@ -949,7 +1041,7 @@ def render_database_page():
                             parts = [p.strip() for p in raw_name.replace('，', ',').split(',')]
                             batch_names = [p for p in parts if p != '']
                             if not batch_names:
-                                st.error('conjugate_batch_name is empty.')
+                                st.error('Conjugate batch is required.')
                                 return
                             inserted_n = 0
                             failed = []
@@ -980,18 +1072,83 @@ def render_database_page():
             visible_cols = [c for c in visible_df.columns if c not in hidden_in_table]
             visible_df = visible_df[visible_cols]
 
-        st.caption(f'Table: {_table_display_name(selected_table)} | Rows: {len(df)}')
         if df.empty:
             st.info('No rows in this table.')
             return
 
+        filtered_visible_df = visible_df.copy()
+        with st.expander('Filters', expanded=False):
+            filter_cols = st.columns(3)
+            for idx, col_name in enumerate(visible_df.columns):
+                display_name = _column_display_name(selected_table, col_name)
+                with filter_cols[idx % 3]:
+                    if col_name == 'active':
+                        status = st.selectbox(
+                            display_name,
+                            options=['All', 'Active', 'Inactive'],
+                            key=f'db_filter_{selected_table}_{col_name}',
+                        )
+                        if status != 'All':
+                            target = 1 if status == 'Active' else 0
+                            filtered_visible_df = filtered_visible_df[
+                                pd.to_numeric(filtered_visible_df[col_name], errors='coerce').fillna(1).astype(int) == target
+                            ]
+                    else:
+                        values = [
+                            str(v).strip()
+                            for v in visible_df[col_name].dropna().tolist()
+                            if str(v).strip() != ''
+                        ]
+                        values = sorted(dict.fromkeys(values))
+                        if len(values) <= 60:
+                            selected_values = st.multiselect(
+                                display_name,
+                                options=values,
+                                default=[],
+                                key=f'db_filter_{selected_table}_{col_name}',
+                            )
+                            if selected_values:
+                                selected_set = set(selected_values)
+                                filtered_visible_df = filtered_visible_df[
+                                    filtered_visible_df[col_name].astype(str).str.strip().isin(selected_set)
+                                ]
+                        else:
+                            text_filter = st.text_input(
+                                display_name,
+                                value='',
+                                placeholder='Contains...',
+                                key=f'db_filter_{selected_table}_{col_name}',
+                            )
+                            if text_filter.strip():
+                                filtered_visible_df = filtered_visible_df[
+                                    filtered_visible_df[col_name].astype(str).str.contains(text_filter.strip(), case=False, na=False)
+                                ]
+
+        st.caption(f'Table: {_table_display_name(selected_table)} | Showing: {len(filtered_visible_df)} of {len(df)} row(s)')
+
         pk_names = [c['name'] for c in columns if c['is_pk']]
         display_to_real = {
             _column_display_name(selected_table, col_name): col_name
-            for col_name in visible_df.columns
+            for col_name in filtered_visible_df.columns
         }
-        editor_df = visible_df.rename(columns={v: k for k, v in display_to_real.items()}).copy()
-        editor_df['remove'] = False
+        if 'active' in df.columns and not filtered_visible_df.empty:
+            bulk_col1, bulk_col2, _ = st.columns([1, 1, 4])
+            if bulk_col1.button('Activate shown', key=f'db_activate_filtered_{selected_table}', width='stretch'):
+                for row_idx in filtered_visible_df.index:
+                    pk_payload = {pk_name: df.loc[row_idx, pk_name] for pk_name in pk_names if pk_name in df.columns}
+                    _update_row_by_pk(conn, selected_table, pk_payload, {'active': 1})
+                st.success(f'Activated {len(filtered_visible_df)} shown row(s).')
+                st.rerun()
+            if bulk_col2.button('Deactivate shown', key=f'db_deactivate_filtered_{selected_table}', width='stretch'):
+                for row_idx in filtered_visible_df.index:
+                    pk_payload = {pk_name: df.loc[row_idx, pk_name] for pk_name in pk_names if pk_name in df.columns}
+                    _update_row_by_pk(conn, selected_table, pk_payload, {'active': 0})
+                st.success(f'Deactivated {len(filtered_visible_df)} shown row(s).')
+                st.rerun()
+
+        editor_df = filtered_visible_df.rename(columns={v: k for k, v in display_to_real.items()}).copy()
+        editor_df.insert(0, SOURCE_INDEX_COL, filtered_visible_df.index)
+        editor_df['Remove'] = False
 
         edit_key = f'db_edit_mode_{selected_table}'
         prev_edit_key = f'db_prev_edit_mode_{selected_table}'
@@ -999,6 +1156,13 @@ def render_database_page():
         prev_edit_mode = bool(st.session_state.get(prev_edit_key, False))
         edit_mode = st.toggle('Edit table', key=edit_key)
         st.session_state[prev_edit_key] = bool(edit_mode)
+        editor_column_config = {
+            display_name: st.column_config.CheckboxColumn(display_name)
+            for display_name, real_name in display_to_real.items()
+            if real_name == 'active'
+        }
+        editor_column_config[SOURCE_INDEX_COL] = None
+        editor_column_config['Remove'] = st.column_config.CheckboxColumn('Remove', width='small')
 
         edited_df = st.data_editor(
             editor_df,
@@ -1006,34 +1170,70 @@ def render_database_page():
             width='stretch',
             key=f'db_editor_{selected_table}_{"edit" if edit_mode else "view"}',
             disabled=(not edit_mode),
+            column_config=editor_column_config,
         )
 
+        save_requested = False
         if edit_mode:
             st.session_state[cache_key] = edited_df.copy()
+            action_cols = st.columns([1, 1, 3])
+            with action_cols[0]:
+                save_requested = st.button('Save edits', key=f'db_save_edits_{selected_table}', width='stretch')
+            remove_count = int(edited_df['Remove'].fillna(False).astype(bool).sum()) if 'Remove' in edited_df.columns else 0
+            if remove_count:
+                with action_cols[1]:
+                    if st.button(f'Remove {remove_count} selected', key=f'db_remove_selected_{selected_table}', width='stretch'):
+                        pending_delete_payloads, pending_delete_labels = _build_pending_delete_rows(
+                            selected_table,
+                            edited_df,
+                            df,
+                            pk_names,
+                        )
+                        if pending_delete_payloads:
+                            st.session_state['db_pending_delete_rows'] = {
+                                'table_name': selected_table,
+                                'pk_payloads': pending_delete_payloads,
+                                'labels': pending_delete_labels,
+                            }
+                            _confirm_delete_rows_dialog()
+                        else:
+                            st.warning('No removable rows are selected.')
 
-        if prev_edit_mode and not edit_mode:
+        if save_requested or (prev_edit_mode and not edit_mode):
             try:
                 edited_df = st.session_state.get(cache_key)
                 if edited_df is None:
                     st.info('No changes to save.')
                     return
-                editable_col_meta = {c['name']: c for c in columns if c['name'] in visible_df.columns}
-                updated_rows = 0
-                deleted_rows = 0
-                for row_idx, edited_row in edited_df.iterrows():
-                    if bool(edited_row.get('remove', False)):
-                        pk_payload = {pk_name: df.iloc[row_idx][pk_name] for pk_name in pk_names if pk_name in df.columns}
-                        _delete_row_by_pk(conn, selected_table, pk_payload)
-                        deleted_rows += 1
-                        continue
+                editable_col_meta = {c['name']: c for c in columns if c['name'] in filtered_visible_df.columns}
+                pending_delete_payloads, pending_delete_labels = _build_pending_delete_rows(
+                    selected_table,
+                    edited_df,
+                    df,
+                    pk_names,
+                )
+                if pending_delete_payloads:
+                    st.session_state['db_pending_delete_rows'] = {
+                        'table_name': selected_table,
+                        'pk_payloads': pending_delete_payloads,
+                        'labels': pending_delete_labels,
+                    }
+                    st.warning('Confirm removal before rows are deleted.')
+                    _confirm_delete_rows_dialog()
+                    return
 
-                    original_row = visible_df.iloc[row_idx]
+                updated_rows = 0
+                for row_idx, edited_row in edited_df.iterrows():
+                    source_idx = edited_row.get(SOURCE_INDEX_COL, row_idx)
+                    if source_idx not in filtered_visible_df.index:
+                        continue
+                    original_row = filtered_visible_df.loc[source_idx]
                     row_payload = {}
                     missing = []
                     convert_errors = []
 
                     for display_name, raw_value in edited_row.items():
-                        if display_name == 'remove':
+                        if display_name in ('Remove', SOURCE_INDEX_COL):
                             continue
                         real_name = display_to_real[display_name]
                         col_meta = editable_col_meta[real_name]
@@ -1051,14 +1251,14 @@ def render_database_page():
                             continue
 
                         try:
-                            converted = _convert_input(raw_text, col_meta['type'])
+                            converted = _convert_input(raw_value if isinstance(raw_value, bool) else raw_text, col_meta['type'])
                         except ValueError:
-                            convert_errors.append(f'{real_name} expects {col_meta["type"]}')
+                            convert_errors.append(f'{_column_display_name(selected_table, real_name)} expects {col_meta["type"]}')
                             continue
                         row_payload[real_name] = converted
 
                     if missing:
-                        raise ValueError(f'Row {row_idx + 1} missing required: {", ".join(missing)}')
+                        raise ValueError(f'Row {row_idx + 1} missing required fields: {", ".join(missing)}')
                     if convert_errors:
                         raise ValueError(f'Row {row_idx + 1}: {"; ".join(convert_errors)}')
 
@@ -1073,18 +1273,16 @@ def render_database_page():
                     if not has_changes:
                         continue
 
-                    pk_payload = {pk_name: df.iloc[row_idx][pk_name] for pk_name in pk_names if pk_name in df.columns}
+                    pk_payload = {pk_name: df.loc[source_idx, pk_name] for pk_name in pk_names if pk_name in df.columns}
                     _update_row_by_pk(conn, selected_table, pk_payload, row_payload)
                     updated_rows += 1
 
-                if updated_rows == 0 and deleted_rows == 0:
+                if updated_rows == 0:
                     st.info('No changes to save.')
                 else:
                     msg = []
                     if updated_rows:
                         msg.append(f'updated {updated_rows} row(s)')
-                    if deleted_rows:
-                        msg.append(f'deleted {deleted_rows} row(s)')
                     st.success('Saved table changes: ' + ', '.join(msg) + '.')
                     st.session_state.pop(cache_key, None)
                     st.rerun()

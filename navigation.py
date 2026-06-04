@@ -3,7 +3,7 @@ import streamlit as st
 
 PAGE_GROUPS = [
     {
-        'group': 'Workspace',
+        'group': 'Run Experiments',
         'pages': [
             {
                 'name': 'Library',
@@ -14,7 +14,12 @@ PAGE_GROUPS = [
                 'name': 'Standard',
                 'label': 'Standard',
                 'description': 'Standard rule image preview and vertical dark-line detection.'
-            },
+            }
+        ]
+    },
+    {
+        'group': 'Review Results',
+        'pages': [
             {
                 'name': 'Results',
                 'label': 'Results',
@@ -29,21 +34,21 @@ PAGE_GROUPS = [
                 'name': 'Review',
                 'label': 'Review',
                 'description': 'Manual review page with side-by-side image checks and visual score inputs.'
-            },
-            {
-                'name': 'Database',
-                'label': 'Database',
-                'description': 'View tables from experiment_data.db using a dropdown selector.'
             }
         ]
     },
     {
-        'group': 'Admin',
+        'group': 'Manage Data',
         'pages': [
             {
-                'name': 'Settings',
-                'label': 'Settings',
-                'description': 'A place for app preferences and UI controls.'
+                'name': 'Database',
+                'label': 'Database',
+                'description': 'View tables from experiment_data.db using a dropdown selector.'
+            },
+            {
+                'name': 'Backup',
+                'label': 'Backup',
+                'description': 'Create and restore experiment_data.db backups.'
             }
         ]
     }
@@ -63,26 +68,38 @@ PAGE_BY_LABEL = {
 }
 
 
+def _set_selected_page(label):
+    st.session_state.selected_page_label = label
+    st.session_state.selected_page_label_radio = label
+
+
 def render_sidebar_navigation():
     default_page_label = PAGE_DEFINITIONS[0]['label']
 
-    if 'selected_page_label_radio' not in st.session_state:
-        st.session_state.selected_page_label_radio = default_page_label
+    selected_page = st.session_state.get('selected_page_label', default_page_label)
+    if selected_page not in PAGE_BY_LABEL:
+        selected_page = default_page_label
 
-    if st.session_state.selected_page_label_radio not in PAGE_BY_LABEL:
-        st.session_state.selected_page_label_radio = default_page_label
+    selected = selected_page
+    for page_group in PAGE_GROUPS:
+        st.sidebar.markdown(
+            f"<div class='analysis-sidebar-section-title'>{page_group['group']}</div>",
+            unsafe_allow_html=True,
+        )
+        for page_definition in page_group['pages']:
+            label = page_definition['label']
+            if st.sidebar.button(
+                label,
+                key=f'nav_button_{label}',
+                type='primary' if label == selected else 'secondary',
+                width='stretch',
+                on_click=_set_selected_page,
+                args=(label,),
+            ):
+                selected = label
 
-    # Keep canonical selection synced from widget state to avoid
-    # two-click updates caused by mixed index/key/session assignments.
-    def _sync_selected_page():
-        st.session_state.selected_page_label = st.session_state.selected_page_label_radio
-
-    labels = [p['label'] for p in PAGE_DEFINITIONS]
-    st.sidebar.radio(
-        'Pages',
-        options=labels,
-        key='selected_page_label_radio',
-        on_change=_sync_selected_page,
-    )
-    st.session_state.selected_page_label = st.session_state.selected_page_label_radio
-    return st.session_state.selected_page_label_radio
+    selected = st.session_state.get('selected_page_label', selected)
+    if selected not in PAGE_BY_LABEL:
+        selected = default_page_label
+    _set_selected_page(selected)
+    return selected

@@ -11,6 +11,7 @@ from results import render_insights_page
 from analysis import render_analysis_page
 from human_review import render_human_review_page
 from database import render_database_page
+from db_backup import render_database_backup_page
 from image_processing import upload_and_convert_to_grayscale
 
 st.set_page_config(
@@ -29,7 +30,7 @@ PAGE_HANDLERS = {
     'Analysis': lambda: render_analysis_page(),
     'Review': lambda: render_human_review_page(),
     'Database': lambda: render_database_page(),
-    'Settings': lambda: render_settings_page(),
+    'Backup': lambda: render_database_backup_page(),
 }
 
 
@@ -114,28 +115,28 @@ def render_home_page():
         )
 
 
-# `render_library_page` is implemented in `library.py` and imported above.
-
-
-def render_settings_page():
-    st.subheader('Settings')
-    st.write(
-        'Use this area for environment settings, theme controls, and app preferences.')
-    st.warning('No invoice-dashboard settings are imported here.')
+def _theme_is_dark():
+    return get_native_theme_is_dark()
 
 
 def main():
-    apply_custom_theme(dark_mode_enabled=get_native_theme_is_dark())
+    apply_custom_theme(dark_mode_enabled=_theme_is_dark())
     apply_minor_ui_fixes()
     render_sidebar_brand()
 
     selected_page_label = render_sidebar_navigation()
     st.sidebar.divider()
-    if st.sidebar.button('Clear All', key='clear_all_content', width='stretch'):
-        clear_all_content()
-        st.session_state.selected_page_label = 'Library'
-        st.session_state.selected_page_label_radio = 'Library'
-        st.rerun()
+    with st.sidebar.expander('Danger zone', expanded=False):
+        confirm_clear = st.checkbox(
+            'Confirm clearing uploaded results',
+            key='confirm_clear_all_content',
+        )
+        if st.button('Clear All', key='clear_all_content', disabled=not confirm_clear, width='stretch'):
+            clear_all_content()
+            st.session_state.selected_page_label = 'Library'
+            st.session_state.selected_page_label_radio = 'Library'
+            st.session_state.confirm_clear_all_content = False
+            st.rerun()
 
     page_definition = PAGE_BY_LABEL[selected_page_label]
 

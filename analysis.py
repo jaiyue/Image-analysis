@@ -4,6 +4,8 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+from ui_labels import display_label
+
 
 DB_PATH = Path(__file__).parent / 'experiment_data.db'
 
@@ -146,7 +148,7 @@ def _joined_titles(series):
 
 
 def _display_label(text):
-    return str(text).replace('_', ' ')
+    return display_label(text)
 
 
 def _load_distinct_values(df, columns):
@@ -173,7 +175,7 @@ def _apply_analysis_filters(df):
 
     title_options = ['All'] + _load_distinct_values(filtered, ['experiment_title'])
     selected_title = filter_cols[0].selectbox(
-        'experiment title',
+        'Experiment title',
         options=title_options,
         index=0,
     )
@@ -191,12 +193,12 @@ def _apply_analysis_filters(df):
         filter_cols[1].caption('Date range: none')
 
     selected_materials = filter_cols[2].multiselect(
-        'material',
+        'Material',
         options=_load_distinct_values(filtered, MATERIAL_FILTER_COLUMNS),
         default=[],
     )
     selected_reagents = filter_cols[3].multiselect(
-        'reagent',
+        'Reagent',
         options=_load_distinct_values(filtered, REAGENT_FILTER_COLUMNS),
         default=[],
     )
@@ -410,12 +412,12 @@ def render_analysis_page():
 
     st.markdown(
         """
-        <div style="font-size:0.88rem; line-height:1.2; color:rgba(49, 51, 63, 0.78); margin-bottom:0.6rem;">
-            <div><strong>Competitive Response Score (35%)</strong>: <code>abs(Pearson r)</code> between <code>sample_equivalent_mg_ml</code> and mean <code>test_reference_ratio</code>. Range: 0-1.</div>
+        <div class="analysis-help-text">
+            <div><strong>Competitive Response Score (35%)</strong>: Pearson correlation between sample equivalent and mean T/R ratio. Range: 0-1.</div>
             <div><strong>Dynamic Range Score (25%)</strong>: first compute <code>max(mean T/R) - min(mean T/R)</code> inside each analysis group; then normalize across all groups, with best = 1 and worst = 0.</div>
             <div><strong>Repeatability Score (20%)</strong>: <code>1 - mean CV(T/R)</code> across repeated strips at the same concentration. Range: 0-1.</div>
-            <div><strong>Background Quality Score (10%)</strong>: compute mean <code>overall_membrane_background</code> inside each group, then score it as <code>1 - BG/255</code>. Background closer to 0 gives a higher score; background closer to 255 gives a lower score.</div>
-            <div><strong>Reference Stability Score (10%)</strong>: <code>1 - CV(reference_line_corrected_intensity)</code> across strips. Range: 0-1.</div>
+            <div><strong>Background Quality Score (10%)</strong>: mean membrane background scored as <code>1 - BG/255</code>.</div>
+            <div><strong>Reference Stability Score (10%)</strong>: <code>1 - CV(reference corrected intensity)</code> across strips. Range: 0-1.</div>
             <div><strong>Total Score</strong>: weighted average of available metric scores. If one metric is missing, the remaining weights are re-normalized automatically.</div>
         </div>
         """,
@@ -427,4 +429,9 @@ def render_analysis_page():
         st.info('No analysis result could be computed from current data.')
         return
 
-    st.table(result_df)
+    st.dataframe(
+        result_df,
+        width='stretch',
+        hide_index=True,
+        column_config={col: st.column_config.Column(_display_label(col)) for col in result_df.columns},
+    )

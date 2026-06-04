@@ -7,6 +7,7 @@ from PIL import Image, ImageOps
 from image_processing import process_image_to_grayscale, analyze_library_image
 from database import DB_PATH, sync_experiment_db
 from uploads_db import get_upload_detail_by_id, init_uploads_db, update_upload_detail, upsert_upload_record
+from ui_labels import display_label
 
 
 IMAGE_ANALYSIS_FIELDS = [
@@ -172,6 +173,7 @@ def _render_table_editor(row_dict, edit_mode, key_prefix, width='stretch', hide_
         key=key_prefix,
         width=width,
         disabled=(not edit_mode),
+        column_config={col: st.column_config.Column(display_label(col)) for col in render_row.keys()},
     ).copy()
 
 

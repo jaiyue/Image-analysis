@@ -5,6 +5,8 @@ import sqlite3
 import streamlit as st
 from PIL import Image
 
+from ui_labels import display_label
+
 
 PROJECT_ROOT = Path(__file__).parent
 REFERENCE_IMAGE_PATH = PROJECT_ROOT / 'image.png'
@@ -228,9 +230,9 @@ def render_human_review_page():
             st.image(ref_img, caption='Reference: image.png')
 
         with right_col:
-            st.image(random_img, caption=f'Random Upload: {random_image_path.name}')
+            st.image(random_img, caption=f'Uploaded image: {random_image_path.name}')
 
-        if st.button('Change Image', key='review_pick_new_image', width='content'):
+        if st.button('Choose another image', key='review_pick_new_image', width='content'):
             picked = _pick_random_original_image()
             st.session_state.review_random_image_name = picked.name if picked else ''
             st.rerun()
@@ -238,7 +240,12 @@ def render_human_review_page():
         st.write('History')
         history_rows = _load_history_rows()
         if history_rows:
-            st.dataframe(history_rows, hide_index=True, width='stretch')
+            st.dataframe(
+                history_rows,
+                hide_index=True,
+                width='stretch',
+                column_config={key: st.column_config.Column(display_label(key)) for key in history_rows[0].keys()},
+            )
         else:
             st.info('No review history yet.')
 
@@ -246,9 +253,9 @@ def render_human_review_page():
         st.write('Visual Score')
 
         header_cols = st.columns([1, 2, 2])
-        header_cols[0].write('title')
-        header_cols[1].write('c')
-        header_cols[2].write('t')
+        header_cols[0].write('Reviewer')
+        header_cols[1].write('Reference score')
+        header_cols[2].write('Test score')
 
         table_key_prefix = random_image_path.stem
         review_rows = []
@@ -289,7 +296,7 @@ def render_human_review_page():
                 c_scores = [float(r['c']) for r in review_rows]
                 t_scores = [float(r['t']) for r in review_rows]
             except ValueError:
-                st.error('c/t must be numeric values.')
+                st.error('Reference and test scores must be numeric values.')
                 return
 
             _insert_review(
@@ -304,10 +311,10 @@ def render_human_review_page():
 
             st.write(f'Image ID: {image_id}')
             st.write(
-                f"c min/max/avg: {min(c_scores):.2f} / {max(c_scores):.2f} / {sum(c_scores)/len(c_scores):.2f}"
+                f"Reference min/max/avg: {min(c_scores):.2f} / {max(c_scores):.2f} / {sum(c_scores)/len(c_scores):.2f}"
             )
             st.write(
-                f"t min/max/avg: {min(t_scores):.2f} / {max(t_scores):.2f} / {sum(t_scores)/len(t_scores):.2f}"
+                f"Test min/max/avg: {min(t_scores):.2f} / {max(t_scores):.2f} / {sum(t_scores)/len(t_scores):.2f}"
             )
             if manual_ratio_avg is None:
                 st.warning('Manual t/c ratio cannot be computed because c contains only 0.')

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS experiments (
     test_line_concentration_mg_ml REAL,
     reference_line_reagent TEXT,
     reference_line_concentration_mg_ml REAL,
+    line_gliding_date TEXT,
+    line_storage_condition TEXT,
+    line_drying_time TEXT,
     glide_volume_ul_per_cm REAL,
     conjugate_batch_name TEXT,
     gnp_lot TEXT,
@@ -61,7 +64,8 @@ CREATE TABLE IF NOT EXISTS conjugate_batch (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conjugate_batch_name TEXT,
     conjugate_ratio TEXT,
-    reconstitution_volume_ul REAL
+    reconstitution_volume_ul REAL,
+    active INTEGER DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS reagent_lots (
@@ -71,7 +75,8 @@ CREATE TABLE IF NOT EXISTS reagent_lots (
     composition_details TEXT,
     manufacture_date TEXT,
     prepared_by TEXT DEFAULT 'A.Li',
-    notes TEXT
+    notes TEXT,
+    active INTEGER DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS pad_material (
@@ -81,7 +86,8 @@ CREATE TABLE IF NOT EXISTS pad_material (
     composition_details TEXT,
     manufacture_date TEXT,
     prepared_by TEXT DEFAULT 'A.Li',
-    notes TEXT
+    notes TEXT,
+    active INTEGER DEFAULT 1 CHECK (active IN (0, 1))
 );
 
 CREATE TABLE IF NOT EXISTS upload_records (

@@ -6,6 +6,7 @@ import io
 from pathlib import Path
 from result_detail import render_insight_detail_page
 from uploads_db import init_uploads_db, list_insight_rows, set_starred_status
+from ui_labels import display_label
 from database import DB_PATH
 
 
@@ -122,7 +123,7 @@ def _fmt_time_simple(v):
 
 
 def _display_label(text):
-    return str(text).replace('_', ' ')
+    return display_label(text)
 
 
 def _build_changed_specific_export_tables(filtered_df):
@@ -238,7 +239,7 @@ def render_insights_page():
         lambda x: (1.0 / x) if pd.notna(x) and abs(float(x)) > 1e-12 else None
     )
 
-    st.caption('Note: `ratio` is the normalized T/C metric; `(c-bg)+(t-bg)` helps distinguish strips with similar ratio but different absolute color intensity.')
+    st.caption('Ratio is the normalized T/R metric. Corrected total helps distinguish strips with similar ratios but different absolute color intensity.')
 
     filter_cols = st.columns([1.6, 2.0, 2.0, 1.3, 1.4])
     id_keyword = filter_cols[0].text_input('Filter ID', value='', placeholder='e.g. 00001')
@@ -255,7 +256,7 @@ def render_insights_page():
     except Exception:
         pass
     experiment_title_filter = filter_cols[1].selectbox(
-        'experiment title',
+        'Experiment title',
         options=experiment_title_options,
         index=0,
     )
@@ -273,12 +274,12 @@ def render_insights_page():
         pass
     changed_default = 'sample_equivalent_mg_ml' if 'sample_equivalent_mg_ml' in changed_options else 'Full'
     changed_filter = filter_cols[2].selectbox(
-        'changed',
+        'Changed variable',
         options=changed_options,
         index=changed_options.index(changed_default),
         format_func=lambda x: x if x == 'Full' else _display_label(x),
     )
-    ratio_bucket = filter_cols[3].selectbox('Ratio range', ['0~0.9', '0.9~1.1', '1.1+', 'Full'], index=3)
+    ratio_bucket = filter_cols[3].selectbox('Ratio range', ['0-0.9', '0.9-1.1', '1.1+', 'Full'], index=3)
 
     date_series = pd.to_datetime(table_df['date'], errors='coerce').dropna()
     if not date_series.empty:
@@ -317,12 +318,12 @@ def render_insights_page():
             filtered_df = filtered_df[in_range | d.isna()]
 
     filtered_df['ratio_num'] = pd.to_numeric(filtered_df['ratio'], errors='coerce')
-    if ratio_bucket == '0~0.9':
+    if ratio_bucket == '0-0.9':
         filtered_df = filtered_df[
             filtered_df['ratio_num'].isna()
             | ((filtered_df['ratio_num'] >= 0.0) & (filtered_df['ratio_num'] < 0.9))
         ]
-    elif ratio_bucket == '0.9~1.1':
+    elif ratio_bucket == '0.9-1.1':
         filtered_df = filtered_df[
             filtered_df['ratio_num'].isna()
             | ((filtered_df['ratio_num'] >= 0.9) & (filtered_df['ratio_num'] <= 1.1))
@@ -411,15 +412,15 @@ def render_insights_page():
 
     head_cols = st.columns([0.70, 0.95, 1.5, 1.5, 0.95, 1.3, 1.3, 0.9, 1.20])
     headers = [
-        'star',
-        'id',
-        'reference_line_corrected_intensity',
-        'test_line_corrected_intensity',
-        'bg',
-        'test_reference_ratio',
-        '(c-bg)+(t-bg)',
-        'date',
-        'detail',
+        'Star',
+        'Image ID',
+        'Reference corrected',
+        'Test corrected',
+        'Background',
+        'T/R ratio',
+        'Corrected total',
+        'Date',
+        'Detail',
     ]
     for i, h in enumerate(headers):
         with head_cols[i]:

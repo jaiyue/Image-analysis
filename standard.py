@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 
 from image_processing import process_image_to_grayscale
+from ui_labels import display_label
 
 
 def _detect_full_height_vertical_dark_regions(gray_pil):
@@ -401,9 +402,7 @@ def render_standard_page():
 
     st.subheader('Standard')
 
-    st.write(
-        'Use `image.png` as the standard rule image.'
-    )
+    st.caption('Reference image used to calibrate standard rule box detection.')
 
     image_path = (
         Path(__file__).parent /
@@ -663,9 +662,11 @@ def render_standard_page():
 
     st.dataframe(
         standard_rows,
-        width='stretch'
+        width='stretch',
+        hide_index=True,
+        column_config={key: st.column_config.Column(display_label(key)) for key in standard_rows[0].keys()} if standard_rows else None,
     )
 
     st.caption(
-        f'Saved to: {standard_path}'
+        f'Saved standard reference: {standard_path.name}'
     )

@@ -26,6 +26,12 @@ def apply_custom_theme(dark_mode_enabled=False):
             'input_text': '#ffffff',
             'top_control_bg': 'rgba(25, 24, 55, 0.96)',
             'top_control_icon': '#ffffff',
+            'button_bg': '#7fba2b',
+            'button_text': '#10151f',
+            'button_secondary_bg': 'rgba(255, 255, 255, 0.08)',
+            'button_secondary_text': '#ffffff',
+            'table_header_bg': '#232447',
+            'row_hover': 'rgba(127, 186, 43, 0.10)',
         }
     else:
         theme_values = {
@@ -51,6 +57,12 @@ def apply_custom_theme(dark_mode_enabled=False):
             'input_text': '#191837',
             'top_control_bg': 'rgba(255, 255, 255, 0.92)',
             'top_control_icon': '#191837',
+            'button_bg': '#6fa51f',
+            'button_text': '#ffffff',
+            'button_secondary_bg': '#f7fbf2',
+            'button_secondary_text': '#191837',
+            'table_header_bg': '#eef7e6',
+            'row_hover': 'rgba(111, 165, 31, 0.08)',
         }
 
     st.markdown(
@@ -79,6 +91,12 @@ def apply_custom_theme(dark_mode_enabled=False):
             --biopanda-input-text: {theme_values['input_text']};
             --biopanda-top-control-bg: {theme_values['top_control_bg']};
             --biopanda-top-control-icon: {theme_values['top_control_icon']};
+            --biopanda-button-bg: {theme_values['button_bg']};
+            --biopanda-button-text: {theme_values['button_text']};
+            --biopanda-button-secondary-bg: {theme_values['button_secondary_bg']};
+            --biopanda-button-secondary-text: {theme_values['button_secondary_text']};
+            --biopanda-table-header-bg: {theme_values['table_header_bg']};
+            --biopanda-row-hover: {theme_values['row_hover']};
         }}
 
         .stApp {{
@@ -91,10 +109,16 @@ def apply_custom_theme(dark_mode_enabled=False):
             box-shadow: none !important;
         }}
 
-        #MainMenu,
         footer,
         div[data-testid='stDecoration'] {{
             visibility: hidden;
+        }}
+
+        #MainMenu,
+        div[data-testid='stToolbar'] {{
+            visibility: visible !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
         }}
 
         .block-container {{
@@ -179,13 +203,15 @@ def apply_custom_theme(dark_mode_enabled=False):
             stroke: var(--biopanda-top-control-icon) !important;
         }}
 
-        .biopanda-sidebar-brand {{
+        .biopanda-sidebar-brand,
+        .analysis-sidebar-brand {{
             padding: 0.35rem 0.25rem 0.8rem 0.25rem;
             margin-bottom: 0.55rem;
             border-bottom: 1px solid var(--biopanda-border-strong);
         }}
 
-        .biopanda-sidebar-logo-card {{
+        .biopanda-sidebar-logo-card,
+        .analysis-sidebar-logo-card {{
             background: rgba(255, 255, 255, 0.94);
             border: 1px solid rgba(111, 165, 31, 0.22);
             border-radius: 1rem;
@@ -194,14 +220,16 @@ def apply_custom_theme(dark_mode_enabled=False):
             margin-bottom: 0.65rem;
         }}
 
-        .biopanda-sidebar-logo-card img {{
+        .biopanda-sidebar-logo-card img,
+        .analysis-sidebar-logo-card img {{
             display: block;
             width: 100%;
             height: auto;
             object-fit: contain;
         }}
 
-        .biopanda-sidebar-caption {{
+        .biopanda-sidebar-caption,
+        .analysis-sidebar-caption {{
             color: var(--biopanda-sidebar-muted) !important;
             font-size: 0.78rem;
             margin-top: 0.35rem;
@@ -209,7 +237,9 @@ def apply_custom_theme(dark_mode_enabled=False):
         }}
 
         .biopanda-sidebar-nav-title,
-        .biopanda-sidebar-section-title {{
+        .biopanda-sidebar-section-title,
+        .analysis-sidebar-nav-title,
+        .analysis-sidebar-section-title {{
             font-size: 0.74rem;
             font-weight: 850;
             text-transform: uppercase;
@@ -217,7 +247,8 @@ def apply_custom_theme(dark_mode_enabled=False):
             margin: 0.85rem 0 0.35rem 0;
         }}
 
-        .biopanda-sidebar-active-page {{
+        .biopanda-sidebar-active-page,
+        .analysis-sidebar-active-page {{
             background: rgba(255, 255, 255, 0.18);
             border: 1px solid rgba(255, 255, 255, 0.22);
             border-radius: 0.85rem;
@@ -244,22 +275,14 @@ def apply_custom_theme(dark_mode_enabled=False):
             overflow: hidden;
             background: var(--biopanda-hero-bg);
             border: 1px solid var(--biopanda-border);
-            border-radius: 1.35rem;
+            border-radius: 0.5rem;
             padding: 1.25rem 1.4rem;
             margin-bottom: 1.25rem;
             box-shadow: 0 18px 45px var(--biopanda-shadow);
         }}
 
         .analysis-hero:before {{
-            content: '';
-            position: absolute;
-            top: -3rem;
-            right: 2.6rem;
-            width: 7.8rem;
-            height: 13rem;
-            border-radius: 4rem;
-            background: linear-gradient(180deg, rgba(111, 165, 31, 0.18), rgba(111, 165, 31, 0.04));
-            transform: rotate(24deg);
+            display: none;
         }}
 
         .analysis-hero-title {{
@@ -303,7 +326,7 @@ def apply_custom_theme(dark_mode_enabled=False):
             background: var(--biopanda-card);
             border: 1px solid var(--biopanda-border);
             border-left: 0.35rem solid var(--biopanda-green);
-            border-radius: 1rem;
+            border-radius: 0.5rem;
             padding: 1rem;
             box-shadow: 0 10px 26px var(--biopanda-shadow);
             min-height: 7rem;
@@ -338,6 +361,223 @@ def apply_custom_theme(dark_mode_enabled=False):
         .stApp div[data-testid='stMultiSelect'] {{
             background: transparent !important;
             box-shadow: none !important;
+        }}
+
+        .stApp label,
+        .stApp p,
+        .stApp div[data-testid='stMarkdownContainer'],
+        .stApp div[data-testid='stCaptionContainer'] {{
+            color: var(--biopanda-navy) !important;
+        }}
+
+        .stApp div[data-testid='stCaptionContainer'] *,
+        .stApp small {{
+            color: var(--biopanda-muted) !important;
+        }}
+
+        .stApp input,
+        .stApp textarea,
+        .stApp [data-baseweb='select'] > div,
+        .stApp [data-baseweb='input'] > div,
+        .stApp [data-baseweb='textarea'] > div,
+        .stApp [data-baseweb='base-input'] {{
+            background-color: var(--biopanda-input-bg) !important;
+            color: var(--biopanda-input-text) !important;
+            border-color: var(--biopanda-border) !important;
+        }}
+
+        .stApp [data-baseweb='popover'],
+        .stApp [data-baseweb='menu'],
+        .stApp [role='listbox'],
+        .stApp [role='option'] {{
+            background-color: var(--biopanda-card) !important;
+            color: var(--biopanda-navy) !important;
+            border-color: var(--biopanda-border) !important;
+        }}
+
+        .stApp [role='option']:hover {{
+            background-color: var(--biopanda-row-hover) !important;
+        }}
+
+        .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] {{
+            background: var(--biopanda-green-soft) !important;
+            border: 1px solid var(--biopanda-border-strong) !important;
+            border-radius: 0.4rem !important;
+            color: var(--biopanda-navy) !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 0 !important;
+            margin-left: 1.35rem !important;
+            min-height: 1.55rem !important;
+            max-width: 100% !important;
+            overflow: visible !important;
+            padding: 0.12rem 1.45rem 0.12rem 0.45rem !important;
+            position: relative !important;
+        }}
+
+        .stApp div[data-testid='stMultiSelect'] [data-baseweb='select']:focus-within [data-baseweb='tag'] {{
+            margin-left: 0 !important;
+        }}
+
+        .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] span,
+        .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] div:not([role='button']) {{
+            color: var(--biopanda-navy) !important;
+            display: inline-block !important;
+            margin-left: 0 !important;
+            min-width: 0 !important;
+            overflow: hidden !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+            line-height: 1.2 !important;
+        }}
+
+        .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] button {{
+            position: absolute !important;
+            left: auto !important;
+            right: 0.25rem !important;
+            top: 50% !important;
+            transform: translateY(-50%) !important;
+            width: 1rem !important;
+            min-width: 1rem !important;
+            height: 1rem !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            color: var(--biopanda-navy) !important;
+        }}
+
+        .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] button svg {{
+            display: block !important;
+            height: 0.8rem !important;
+            width: 0.8rem !important;
+        }}
+
+        .stApp button[kind='primary'],
+        .stApp div[data-testid='stButton'] button[kind='primary'],
+        .stApp div[data-testid='stDownloadButton'] button {{
+            background: var(--biopanda-button-bg) !important;
+            color: var(--biopanda-button-text) !important;
+            border-color: var(--biopanda-button-bg) !important;
+        }}
+
+        .stApp div[data-testid='stButton'] button,
+        .stApp div[data-testid='stFormSubmitButton'] button {{
+            border-radius: 0.5rem !important;
+            border-color: var(--biopanda-border) !important;
+            background: var(--biopanda-button-secondary-bg) !important;
+            color: var(--biopanda-button-secondary-text) !important;
+        }}
+
+        .stApp div[data-testid='stButton'] button:hover,
+        .stApp div[data-testid='stFormSubmitButton'] button:hover {{
+            border-color: var(--biopanda-border-strong) !important;
+            background: var(--biopanda-row-hover) !important;
+        }}
+
+        .stApp section[data-testid='stSidebar'] div[data-testid='stButton'] {{
+            margin-bottom: 0.35rem !important;
+        }}
+
+        .stApp section[data-testid='stSidebar'] div[data-testid='stButton'] button {{
+            min-height: 2.75rem !important;
+            padding: 0.7rem 0.85rem !important;
+            border-radius: 0.5rem !important;
+            justify-content: flex-start !important;
+            text-align: left !important;
+            font-size: 0.98rem !important;
+            font-weight: 750 !important;
+            background: var(--biopanda-sidebar-button) !important;
+            border-color: rgba(255, 255, 255, 0.14) !important;
+            color: var(--biopanda-sidebar-text) !important;
+        }}
+
+        .stApp section[data-testid='stSidebar'] div[data-testid='stButton'] button[kind='primary'] {{
+            background: var(--biopanda-button-bg) !important;
+            border-color: var(--biopanda-button-bg) !important;
+            color: var(--biopanda-button-text) !important;
+        }}
+
+        .stApp section[data-testid='stSidebar'] div[data-testid='stButton'] button:hover {{
+            background: var(--biopanda-sidebar-button-hover) !important;
+            border-color: rgba(255, 255, 255, 0.28) !important;
+        }}
+
+        .stApp section[data-testid='stSidebar'] div[data-testid='stButton'] button[kind='primary']:hover {{
+            background: var(--biopanda-button-bg) !important;
+            border-color: var(--biopanda-button-bg) !important;
+            color: var(--biopanda-button-text) !important;
+        }}
+
+        .stApp div[data-testid='stFileUploader'] button,
+        .stApp div[data-testid='stFileUploader'] button[kind='secondary'] {{
+            background: var(--biopanda-button-secondary-bg) !important;
+            color: var(--biopanda-button-secondary-text) !important;
+            border: 1px solid var(--biopanda-border-strong) !important;
+            border-radius: 0.5rem !important;
+        }}
+
+        .stApp div[data-testid='stFileUploader'] button *,
+        .stApp div[data-testid='stFileUploader'] button span,
+        .stApp div[data-testid='stFileUploader'] button p {{
+            color: var(--biopanda-button-secondary-text) !important;
+        }}
+
+        .stApp div[data-testid='stFileUploader'] button:hover {{
+            background: var(--biopanda-row-hover) !important;
+            color: var(--biopanda-navy) !important;
+        }}
+
+        .stApp input::placeholder,
+        .stApp textarea::placeholder {{
+            color: var(--biopanda-muted) !important;
+            opacity: 0.82 !important;
+        }}
+
+        .stApp div[data-testid='stDataFrame'],
+        .stApp div[data-testid='stDataEditor'] {{
+            border: 1px solid var(--biopanda-border) !important;
+            border-radius: 0.5rem !important;
+            overflow: hidden !important;
+            background: var(--biopanda-card) !important;
+        }}
+
+        .stApp div[data-testid='stDataFrame'] *,
+        .stApp div[data-testid='stDataEditor'] * {{
+            color: var(--biopanda-navy);
+        }}
+
+        .stApp [data-testid='stMetric'],
+        .stApp [data-testid='stExpander'] {{
+            background: var(--biopanda-card) !important;
+            border-color: var(--biopanda-border) !important;
+            border-radius: 0.5rem !important;
+        }}
+
+        .stApp div[data-testid='stAlert'] {{
+            border-radius: 0.5rem !important;
+            border-color: var(--biopanda-border-strong) !important;
+        }}
+
+        .stApp hr {{
+            border-color: var(--biopanda-border) !important;
+        }}
+
+        .analysis-help-text {{
+            color: var(--biopanda-muted) !important;
+            font-size: 0.88rem;
+            line-height: 1.35;
+            margin-bottom: 0.6rem;
+        }}
+
+        .analysis-help-text code {{
+            color: var(--biopanda-green-dark) !important;
+            background: var(--biopanda-green-soft) !important;
+            border-radius: 0.25rem;
+            padding: 0.05rem 0.25rem;
         }}
         </style>
         ''',

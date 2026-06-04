@@ -5,3 +5,4 @@ invoice-dashboard/
 .DS_Store
 uploads/
 test/
+database_backups/
