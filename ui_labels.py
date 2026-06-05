@@ -2,6 +2,8 @@ FIELD_LABELS = {
     'id': 'Image ID',
     'strip_id': 'Strip ID',
     'experiment_id': 'Experiment ID',
+    'experiment_ids': 'Experiment IDs',
+    'strip_count': 'Strip count',
     'select': 'Select',
     'remove': 'Remove',
     'Remove': 'Remove',

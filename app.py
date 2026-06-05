@@ -12,7 +12,6 @@ from analysis import render_analysis_page
 from human_review import render_human_review_page
 from database import render_database_page
 from db_backup import render_database_backup_page
-from image_processing import upload_and_convert_to_grayscale
 
 st.set_page_config(
     page_title='Image Analysis Studio',
@@ -23,7 +22,6 @@ st.set_page_config(
 
 
 PAGE_HANDLERS = {
-    'Home': lambda: render_home_page(),
     'Library': lambda: render_library_page(),
     'Standard': lambda: render_standard_page(),
     'Results': lambda: render_insights_page(),
@@ -70,50 +68,6 @@ def clear_all_content():
     st.session_state.clear()
     st.session_state['selected_page_label'] = preserved_selected
     st.session_state['selected_page_label_radio'] = preserved_selected
-
-
-def render_home_page():
-    st.subheader('Workspace Overview')
-    st.write('This project contains the core dashboard shell: a top bar, a sidebar, and a simple content area.')
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown(
-            """
-            <div class='analysis-card'>
-                <div class='analysis-card-label'>Active modules</div>
-                <div class='analysis-card-value'>4</div>
-                <div class='analysis-card-help'>Layout, navigation, theme, and app entrypoint.</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col2:
-        st.markdown(
-            """
-            <div class='analysis-card'>
-                <div class='analysis-card-label'>Runtime</div>
-                <div class='analysis-card-value'>Local</div>
-                <div class='analysis-card-help'>Run directly with Streamlit, no dependency on the invoice dashboard.</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col3:
-        st.markdown(
-            """
-            <div class='analysis-card'>
-                <div class='analysis-card-label'>Scope</div>
-                <div class='analysis-card-value'>Shell</div>
-                <div class='analysis-card-help'>Framework only, ready for your own pages and data sources.</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
 
 def _theme_is_dark():
     return get_native_theme_is_dark()

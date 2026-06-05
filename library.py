@@ -49,6 +49,9 @@ EXPERIMENT_DB_PATH = Path(__file__).parent / 'experiment_data.db'
 ANALYSIS_CACHE_VERSION = 'v2'
 PREPROCESS_CACHE_VERSION = 'v3'
 DNG_EXTENSIONS = {'.dng'}
+DEFAULT_OPERATOR = 'A.Li'
+DRYING_UNITS = ('nights', 'days')
+STORAGE_UNITS = ('°C', '°F')
 
 CHANGED_FIELD_NAMES = [
     'sample_equivalent_mg_ml',
@@ -78,7 +81,7 @@ CHANGED_FIELD_NAMES = [
 ]
 
 EXPERIMENT_DEFAULT_VALUES = {
-    'operator': 'A.Li',
+    'operator': DEFAULT_OPERATOR,
     'conjugate_pad_material': 'NGF66',
     'test_line_reagent': 'Bovine IgG',
     'reference_line_reagent': 'Chicken IgY',
@@ -1263,14 +1266,14 @@ def _apply_previous_experiment_to_form(
             st.session_state[f'library_exp_{db_name}_num'] = m.group(1) if m else ''
             unit = (m.group(2) or 'nights') if m else 'nights'
             unit = unit.lower()
-            if unit not in ('nights', 'days'):
+            if unit not in DRYING_UNITS:
                 unit = 'nights'
             st.session_state[f'library_exp_{db_name}_unit'] = unit
         elif db_name in ('storage_condition', 'line_storage_condition'):
             m = re.match(r'^\s*([0-9]*\.?[0-9]+)\s*(?:°?\s*)?([cCfF]|o[cC]|o[fF])?\s*$', default_val)
             st.session_state[f'library_exp_{db_name}_num'] = m.group(1) if m else ''
             default_unit_raw = (m.group(2) or '').strip().lower() if m else ''
-            st.session_state[f'library_exp_{db_name}_unit'] = '°F' if default_unit_raw in ('f', 'of') else '°C'
+            st.session_state[f'library_exp_{db_name}_unit'] = STORAGE_UNITS[1] if default_unit_raw in ('f', 'of') else STORAGE_UNITS[0]
         else:
             st.session_state[f'library_exp_{db_name}'] = default_val
 
@@ -1391,7 +1394,7 @@ def _render_experiment_field(
         default_num = m.group(1) if m else ''
         default_unit = (m.group(2) or 'nights') if m else 'nights'
         default_unit = default_unit.lower()
-        if default_unit not in ('nights', 'days'):
+        if default_unit not in DRYING_UNITS:
             default_unit = 'nights'
         dt_num_col, dt_unit_col = container.columns([2, 2])
         drying_num = _text_input_with_state(
@@ -1404,7 +1407,7 @@ def _render_experiment_field(
         drying_unit = _selectbox_with_state(
             dt_unit_col,
             'unit',
-            ['nights', 'days'],
+            list(DRYING_UNITS),
             key=f'library_exp_{db_name}_unit',
             default_index=0 if default_unit == 'nights' else 1,
         )
@@ -1414,9 +1417,9 @@ def _render_experiment_field(
         default_num = m.group(1) if m else ''
         default_unit_raw = (m.group(2) or '').strip().lower() if m else ''
         if default_unit_raw in ('f', 'of'):
-            default_unit = '°F'
+            default_unit = STORAGE_UNITS[1]
         else:
-            default_unit = '°C'
+            default_unit = STORAGE_UNITS[0]
         sc_num_col, sc_unit_col = container.columns([2, 1])
         storage_num = _text_input_with_state(
             sc_num_col,
@@ -1428,9 +1431,9 @@ def _render_experiment_field(
         storage_unit = _selectbox_with_state(
             sc_unit_col,
             'unit',
-            ['°C', '°F'],
+            list(STORAGE_UNITS),
             key=f'library_exp_{db_name}_unit',
-            default_index=0 if default_unit == '°C' else 1,
+            default_index=0 if default_unit == STORAGE_UNITS[0] else 1,
         )
         form_values[db_name] = (f'{storage_num.strip()} {storage_unit}' if (storage_num or '').strip() else '')
     else:
@@ -1723,119 +1726,6 @@ def _render_experiment_selector():
                         form_values,
                     )
 
-        show_specs = []
-
-        for i in range(0, len(show_specs), 3):
-            row_cols = st.columns(3)
-            for j, spec in enumerate(show_specs[i:i + 3]):
-                ui_label = spec['ui']
-                db_name = spec['db']
-                latest_val = baseline_row.get(db_name)
-                default_val = '' if latest_val is None else str(latest_val)
-                if default_val == '':
-                    default_val = EXPERIMENT_DEFAULT_VALUES.get(db_name, '')
-                field_required = db_name not in OPTIONAL_EXPERIMENT_FIELDS
-                label = label_with_required(ui_label, required=field_required)
-                placeholder = 'Required' if field_required else 'Optional'
-
-                if spec.get('kind') == 'lot_select':
-                    options = list(reagent_lot_values.get(ui_label, []))
-                    if default_val and default_val not in options:
-                        options.append(default_val)
-                    if not options:
-                        options = ['']
-                    default_idx = options.index(default_val) if default_val in options else 0
-                    form_values[db_name] = _selectbox_with_state(
-                        row_cols[j],
-                        label,
-                        options,
-                        key=f'library_exp_{db_name}_select',
-                        default_index=default_idx,
-                    )
-                elif spec.get('kind') == 'pad_select':
-                    options = list(pad_material_values.get(ui_label, []))
-                    if default_val and default_val not in options:
-                        options.append(default_val)
-                    if not options:
-                        options = ['']
-                    default_idx = options.index(default_val) if default_val in options else 0
-                    form_values[db_name] = _selectbox_with_state(
-                        row_cols[j],
-                        label,
-                        options,
-                        key=f'library_exp_{db_name}_select',
-                        default_index=default_idx,
-                    )
-                elif spec.get('kind') == 'conjugate_batch_select':
-                    options = list(conjugate_batch_names)
-                    if default_val and default_val not in options:
-                        options.append(default_val)
-                    if not options:
-                        options = ['']
-                    default_idx = options.index(default_val) if default_val in options else 0
-                    form_values[db_name] = _selectbox_with_state(
-                        row_cols[j],
-                        label,
-                        options,
-                        key=f'library_exp_{db_name}_select',
-                        default_index=default_idx,
-                    )
-                elif db_name == 'drying_time':
-                    m = re.match(r'^\s*([0-9]*\.?[0-9]+)\s*(nights?|days?)?\s*$', default_val, flags=re.IGNORECASE)
-                    default_num = m.group(1) if m else ''
-                    default_unit = (m.group(2) or 'nights') if m else 'nights'
-                    default_unit = default_unit.lower()
-                    if default_unit not in ('nights', 'days'):
-                        default_unit = 'nights'
-                    dt_num_col, dt_unit_col = row_cols[j].columns([2, 2])
-                    drying_num = _text_input_with_state(
-                        dt_num_col,
-                        label,
-                        key=f'library_exp_{db_name}_num',
-                        default_value=default_num,
-                        placeholder=placeholder,
-                    )
-                    drying_unit = _selectbox_with_state(
-                        dt_unit_col,
-                        'unit',
-                        ['nights', 'days'],
-                        key=f'library_exp_{db_name}_unit',
-                        default_index=0 if default_unit == 'nights' else 1,
-                    )
-                    form_values[db_name] = (f'{drying_num.strip()} {drying_unit}' if (drying_num or '').strip() else '')
-                elif db_name in ('storage_condition', 'line_storage_condition'):
-                    m = re.match(r'^\s*([0-9]*\.?[0-9]+)\s*(?:°?\s*)?([cCfF]|o[cC]|o[fF])?\s*$', default_val)
-                    default_num = m.group(1) if m else ''
-                    default_unit_raw = (m.group(2) or '').strip().lower() if m else ''
-                    if default_unit_raw in ('f', 'of'):
-                        default_unit = '°F'
-                    else:
-                        default_unit = '°C'
-                    sc_num_col, sc_unit_col = row_cols[j].columns([2, 1])
-                    storage_num = _text_input_with_state(
-                        sc_num_col,
-                        label,
-                        key=f'library_exp_{db_name}_num',
-                        default_value=default_num,
-                        placeholder=placeholder,
-                    )
-                    storage_unit = _selectbox_with_state(
-                        sc_unit_col,
-                        'unit',
-                        ['°C', '°F'],
-                        key=f'library_exp_{db_name}_unit',
-                        default_index=0 if default_unit == '°C' else 1,
-                    )
-                    form_values[db_name] = (f'{storage_num.strip()} {storage_unit}' if (storage_num or '').strip() else '')
-                else:
-                    form_values[db_name] = _text_input_with_state(
-                        row_cols[j],
-                        label,
-                        key=f'library_exp_{db_name}',
-                        default_value=default_val,
-                        placeholder=placeholder,
-                    )
-
         save_clicked = st.button('Save experiment', key='library_save_experiment', width='content')
 
         if save_clicked:
@@ -1850,7 +1740,7 @@ def _render_experiment_selector():
             payload = {'experiment_date': form_values['experiment_date'].isoformat()}
             payload['experiment_title'] = title
             payload['condition'] = changed_ui
-            payload['operator'] = (baseline_row.get('operator') or latest_row.get('operator') or 'A.Li')
+            payload['operator'] = (baseline_row.get('operator') or latest_row.get('operator') or DEFAULT_OPERATOR)
 
             # Start from baseline to avoid refilling unchanged items.
             if has_baseline:
@@ -1892,7 +1782,7 @@ def _render_experiment_selector():
                         convert_errors.append(f'{ui_label} expects number + °C/°F.')
                     else:
                         unit_raw = m.group(2).lower()
-                        unit = '°F' if unit_raw in ('f', 'of') else '°C'
+                        unit = STORAGE_UNITS[1] if unit_raw in ('f', 'of') else STORAGE_UNITS[0]
                         payload[db_name] = f"{m.group(1)} {unit}"
                 elif spec['kind'] == 'number':
                     try:

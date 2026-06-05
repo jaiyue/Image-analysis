@@ -411,7 +411,7 @@ def apply_custom_theme(dark_mode_enabled=False):
             min-height: 1.55rem !important;
             max-width: 100% !important;
             overflow: visible !important;
-            padding: 0.12rem 1.45rem 0.12rem 0.45rem !important;
+            padding: 0.12rem 0.45rem !important;
             position: relative !important;
         }}
 
@@ -431,29 +431,6 @@ def apply_custom_theme(dark_mode_enabled=False):
             text-overflow: ellipsis !important;
             white-space: nowrap !important;
             line-height: 1.2 !important;
-        }}
-
-        .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] button {{
-            position: absolute !important;
-            left: auto !important;
-            right: 0.25rem !important;
-            top: 50% !important;
-            transform: translateY(-50%) !important;
-            width: 1rem !important;
-            min-width: 1rem !important;
-            height: 1rem !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            border: 0 !important;
-            background: transparent !important;
-            box-shadow: none !important;
-            color: var(--biopanda-navy) !important;
-        }}
-
-        .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] button svg {{
-            display: block !important;
-            height: 0.8rem !important;
-            width: 0.8rem !important;
         }}
 
         .stApp button[kind='primary'],

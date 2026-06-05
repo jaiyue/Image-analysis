@@ -579,14 +579,16 @@ def render_standard_page():
     # Save JSON
 
 
-    standard_path = (
-        Path(__file__).parent /
-        'standard_reference.json'
-    )
+    project_root = Path(__file__).parent
+    standard_path = project_root / 'standard_reference.json'
+    try:
+        source_image = str(image_path.relative_to(project_root))
+    except ValueError:
+        source_image = str(image_path)
 
     payload = {
 
-        'source_image': str(image_path),
+        'source_image': source_image,
 
         'saved_at': datetime.now().isoformat(
             timespec='seconds'

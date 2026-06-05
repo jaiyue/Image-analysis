@@ -13,6 +13,7 @@ DB_PATH = Path(__file__).parent / 'experiment_data.db'
 REMOVE_ICON_PATH = Path(__file__).parent / 'assets' / 'remove.png'
 SOURCE_INDEX_COL = '_source_index'
 SCHEMA_PATH = Path(__file__).parent / 'experiment_schema.sql'
+DEFAULT_OPERATOR = 'A.Li'
 
 REAGENT_TYPE_OPTIONS = [
     'sample_pad_pretreatment_lot',
@@ -52,10 +53,10 @@ AUTO_GENERATED_FIELDS = {
 }
 
 DEFAULT_INPUT_VALUES = {
-    ('experiments', 'operator'): 'A.Li',
-    ('reagent_lots', 'prepared_by'): 'A.Li',
+    ('experiments', 'operator'): DEFAULT_OPERATOR,
+    ('reagent_lots', 'prepared_by'): DEFAULT_OPERATOR,
     ('reagent_lots', 'active'): '1',
-    ('pad_material', 'prepared_by'): 'A.Li',
+    ('pad_material', 'prepared_by'): DEFAULT_OPERATOR,
     ('pad_material', 'active'): '1',
     ('conjugate_batch', 'active'): '1',
 }
@@ -324,7 +325,7 @@ def _ensure_reagent_lots_schema(conn):
                 data.get('reagent_type'),
                 data.get('composition_details'),
                 data.get('manufacture_date'),
-                data.get('prepared_by') or 'A.Li',
+                data.get('prepared_by') or DEFAULT_OPERATOR,
                 data.get('notes'),
             ),
         )
@@ -371,7 +372,7 @@ def _ensure_pad_material_schema(conn):
                 data.get('type'),
                 data.get('composition_details'),
                 data.get('manufacture_date'),
-                data.get('prepared_by') or 'A.Li',
+                data.get('prepared_by') or DEFAULT_OPERATOR,
                 data.get('notes'),
             ),
         )

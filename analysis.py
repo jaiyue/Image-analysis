@@ -17,6 +17,8 @@ WEIGHTS = {
     'reference_stability_score': 0.10,
 }
 
+DEFAULT_SCORE_METRICS = list(WEIGHTS.keys())
+
 GROUP_IGNORE_EXPERIMENT_FIELDS = {
     'experiment_id',
     'experiment_title',
@@ -42,6 +44,50 @@ REAGENT_FILTER_COLUMNS = [
     'gnp_lot',
     'conjugate_batch_name',
 ]
+
+GROUPING_CANDIDATE_COLUMNS = [
+    'experiment_date',
+    'operator',
+    'condition',
+    'nitrocellulose_material',
+    'cassette',
+    'sample_pad_material',
+    'sample_pad_pretreatment_lot',
+    'conjugate_pad_material',
+    'conjugate_pad_pretreatment_lot',
+    'absorbent_pad_material',
+    'running_buffer_lot',
+    'glide_buffer_lot',
+    'reconstitution_buffer_lot',
+    'test_line_reagent',
+    'test_line_concentration_mg_ml',
+    'reference_line_reagent',
+    'reference_line_concentration_mg_ml',
+    'line_gliding_date',
+    'line_storage_condition',
+    'line_drying_time',
+    'glide_volume_ul_per_cm',
+    'conjugate_batch_name',
+    'gnp_lot',
+    'conjugate_loading_ul_per_cm',
+    'drying_time',
+    'storage_condition',
+    'stability_timepoint',
+]
+
+SCORE_COLUMNS = [
+    'competitive_response_score',
+    'dynamic_range_raw_score',
+    'dynamic_range_score',
+    'repeatability_score',
+    'background_quality_score',
+    'reference_stability_score',
+    'total_score',
+]
+
+METRIC_COMPANION_COLUMNS = {
+    'dynamic_range_score': ['dynamic_range_raw_score'],
+}
 
 
 def _fmt4(v):
@@ -112,10 +158,13 @@ def _minmax_normalize(series, invert=False):
     return out
 
 
-def _weighted_total_score(row):
+def _weighted_total_score(row, included_metrics=None):
+    included_metrics = list(included_metrics or DEFAULT_SCORE_METRICS)
     weighted_sum = 0.0
     total_weight = 0.0
     for col, weight in WEIGHTS.items():
+        if col not in included_metrics:
+            continue
         value = row.get(col)
         if value is None:
             continue
@@ -166,6 +215,19 @@ def _load_distinct_values(df, columns):
             seen.add(text)
             values.append(text)
     return sorted(values)
+
+
+def _multiselect_with_existing_state(label, options, default, key, format_func=None):
+    kwargs = {
+        'label': label,
+        'options': options,
+        'key': key,
+    }
+    if format_func is not None:
+        kwargs['format_func'] = format_func
+    if key not in st.session_state:
+        kwargs['default'] = default
+    return st.multiselect(**kwargs)
 
 
 def _apply_analysis_filters(df):
@@ -288,8 +350,62 @@ def _build_group_key_columns(df):
     return [c for c in experiment_cols if c not in GROUP_IGNORE_EXPERIMENT_FIELDS]
 
 
-def _group_analysis_rows(df):
-    group_cols = _build_group_key_columns(df)
+def _available_custom_group_columns(df):
+    return [col for col in GROUPING_CANDIDATE_COLUMNS if col in df.columns]
+
+
+def _effective_weight_caption(included_metrics):
+    included_metrics = [metric for metric in included_metrics if metric in WEIGHTS]
+    total = sum(WEIGHTS[metric] for metric in included_metrics)
+    if total <= 0:
+        return ''
+    parts = [
+        f'{_display_label(metric)} {WEIGHTS[metric] / total:.0%}'
+        for metric in included_metrics
+    ]
+    return 'Total score weights: ' + ', '.join(parts)
+
+
+def _excluded_metric_columns(included_metrics, columns):
+    included = set(included_metrics or [])
+    excluded = []
+    for metric in WEIGHTS:
+        if metric in included:
+            continue
+        if metric in columns:
+            excluded.append(metric)
+        for companion_col in METRIC_COMPANION_COLUMNS.get(metric, []):
+            if companion_col in columns:
+                excluded.append(companion_col)
+    return excluded
+
+
+def _analysis_column_config(columns, included_metrics):
+    excluded = set(_excluded_metric_columns(included_metrics, columns))
+    config = {}
+    for col in columns:
+        label = _display_label(col)
+        if col in excluded:
+            label = f'{label} (excluded)'
+        config[col] = st.column_config.Column(label)
+    return config
+
+
+def _style_analysis_table(df, included_metrics):
+    excluded_cols = _excluded_metric_columns(included_metrics, df.columns)
+    if not excluded_cols:
+        return df
+    return df.style.set_properties(
+        subset=excluded_cols,
+        **{
+            'color': 'rgba(110, 118, 129, 0.72)',
+            'background-color': 'rgba(110, 118, 129, 0.08)',
+        },
+    )
+
+
+def _group_analysis_rows(df, group_cols=None):
+    group_cols = list(group_cols if group_cols is not None else _build_group_key_columns(df))
     work = df.copy()
     if not group_cols:
         work['_analysis_group_key'] = 'all'
@@ -301,7 +417,8 @@ def _group_analysis_rows(df):
     return work
 
 
-def _compute_group_scores(group_df):
+def _compute_group_scores(group_df, group_cols=None):
+    group_cols = list(group_cols or [])
     valid_df = group_df.copy()
     if 'valid_strip' in valid_df.columns:
         valid_df = valid_df[valid_df['valid_strip'].fillna(1).astype(int) != 0]
@@ -344,7 +461,7 @@ def _compute_group_scores(group_df):
     if ref_cv is not None:
         reference_stability_raw = 1.0 - ref_cv
 
-    return {
+    row = {
         'experiment_title': _joined_titles(group_df['experiment_title']),
         'experiment_ids': ', '.join([str(int(x)) for x in pd.to_numeric(group_df['experiment_id'], errors='coerce').dropna().astype(int).drop_duplicates().tolist()]),
         'strip_count': int(len(valid_df)),
@@ -354,13 +471,20 @@ def _compute_group_scores(group_df):
         'background_raw': background_raw,
         'reference_stability_score': _clip01(reference_stability_raw),
     }
+    for col in group_cols:
+        if col in group_df.columns:
+            row[col] = _joined_titles(group_df[col])
+    return row
 
 
-def _build_analysis_table(df):
-    grouped = _group_analysis_rows(df)
+def _build_analysis_table(df, group_cols=None, display_group_cols=None, included_metrics=None):
+    group_cols = list(group_cols if group_cols is not None else _build_group_key_columns(df))
+    display_group_cols = list(display_group_cols or [])
+    included_metrics = list(included_metrics or DEFAULT_SCORE_METRICS)
+    grouped = _group_analysis_rows(df, group_cols=group_cols)
     rows = []
     for _, group_df in grouped.groupby('_analysis_group_key', sort=False):
-        rows.append(_compute_group_scores(group_df))
+        rows.append(_compute_group_scores(group_df, group_cols=group_cols))
 
     if not rows:
         return pd.DataFrame()
@@ -368,10 +492,16 @@ def _build_analysis_table(df):
     result_df = pd.DataFrame(rows)
     result_df['dynamic_range_score'] = _minmax_normalize(result_df['dynamic_range_raw'], invert=False)
     result_df['background_quality_score'] = result_df['background_raw'].apply(_background_quality_score_255)
-    result_df['total_score'] = result_df.apply(_weighted_total_score, axis=1)
+    result_df['total_score'] = result_df.apply(
+        lambda row: _weighted_total_score(row, included_metrics=included_metrics),
+        axis=1,
+    )
 
-    display_cols = [
+    leading_cols = [col for col in display_group_cols if col in result_df.columns]
+    display_cols = leading_cols + [
         'experiment_title',
+        'experiment_ids',
+        'strip_count',
         'competitive_response_score',
         'dynamic_range_raw',
         'dynamic_range_score',
@@ -383,7 +513,7 @@ def _build_analysis_table(df):
     result_df = result_df[display_cols]
     result_df = result_df.rename(columns={'dynamic_range_raw': 'dynamic_range_raw_score'})
     result_df = result_df.sort_values(by='total_score', ascending=False, na_position='last').reset_index(drop=True)
-    for col in result_df.columns[1:]:
+    for col in [c for c in SCORE_COLUMNS if c in result_df.columns]:
         result_df[col] = result_df[col].apply(_fmt4)
     return result_df
 
@@ -410,6 +540,55 @@ def render_analysis_page():
         st.info('No records matched current filters.')
         return
 
+    available_group_cols = _available_custom_group_columns(df)
+    grouping_mode = st.radio(
+        'Grouping',
+        options=['Strict experiment match', 'Custom variables'],
+        horizontal=True,
+        key='analysis_grouping_mode',
+    )
+    if grouping_mode == 'Custom variables':
+        custom_group_key = 'analysis_custom_group_columns'
+        if custom_group_key in st.session_state:
+            st.session_state[custom_group_key] = [
+                col for col in st.session_state[custom_group_key] if col in available_group_cols
+            ]
+        selected_group_cols = _multiselect_with_existing_state(
+            'Group experiments by',
+            options=available_group_cols,
+            default=[],
+            key=custom_group_key,
+            format_func=_display_label,
+        )
+        if not selected_group_cols:
+            st.info('Select at least one variable to build custom experiment groups.')
+            return
+        group_cols = selected_group_cols
+        display_group_cols = selected_group_cols
+    else:
+        group_cols = _build_group_key_columns(df)
+        display_group_cols = []
+
+    metric_key = 'analysis_included_score_metrics'
+    if metric_key in st.session_state:
+        st.session_state[metric_key] = [
+            metric for metric in st.session_state[metric_key] if metric in WEIGHTS
+        ]
+    included_metrics = _multiselect_with_existing_state(
+        'Include in total score',
+        options=list(WEIGHTS.keys()),
+        default=DEFAULT_SCORE_METRICS,
+        key=metric_key,
+        format_func=_display_label,
+    )
+    if not included_metrics:
+        st.info('Select at least one score metric to calculate total score.')
+        return
+
+    group_count = len(_group_analysis_rows(df, group_cols=group_cols)['_analysis_group_key'].drop_duplicates())
+    st.caption(f'Comparing {group_count} experiment group(s) from {len(df)} strip result(s).')
+    st.caption(_effective_weight_caption(included_metrics))
+
     st.markdown(
         """
         <div class="analysis-help-text">
@@ -418,20 +597,26 @@ def render_analysis_page():
             <div><strong>Repeatability Score (20%)</strong>: <code>1 - mean CV(T/R)</code> across repeated strips at the same concentration. Range: 0-1.</div>
             <div><strong>Background Quality Score (10%)</strong>: mean membrane background scored as <code>1 - BG/255</code>.</div>
             <div><strong>Reference Stability Score (10%)</strong>: <code>1 - CV(reference corrected intensity)</code> across strips. Range: 0-1.</div>
-            <div><strong>Total Score</strong>: weighted average of available metric scores. If one metric is missing, the remaining weights are re-normalized automatically.</div>
+            <div><strong>Total Score</strong>: weighted average of selected metric scores. If one selected metric is missing, the remaining selected weights are re-normalized automatically.</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    result_df = _build_analysis_table(df)
+    result_df = _build_analysis_table(
+        df,
+        group_cols=group_cols,
+        display_group_cols=display_group_cols,
+        included_metrics=included_metrics,
+    )
     if result_df.empty:
         st.info('No analysis result could be computed from current data.')
         return
 
+    styled_result = _style_analysis_table(result_df, included_metrics)
     st.dataframe(
-        result_df,
+        styled_result,
         width='stretch',
         hide_index=True,
-        column_config={col: st.column_config.Column(_display_label(col)) for col in result_df.columns},
+        column_config=_analysis_column_config(result_df.columns, included_metrics),
     )
