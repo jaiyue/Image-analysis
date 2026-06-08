@@ -55,6 +55,14 @@ In `experiment_data.db`:
 2. Review table and open `Detail` per row.
 3. Export from bottom-right floating button.
 
+#### Result Detail
+
+- If `today - experiment_date > 2 days`, Detail only shows:
+  - `1b. Manual Crop` (or `1. Original` if no manual crop)
+  - `4. Cropped Vertical Overlay`
+  - `7. Dark Regions Overlay`
+- If `today - experiment_date > 3 days`, app startup automatically deletes the hidden detail images and clears their saved paths.
+
 ### Analysis
 
 1. Open `Analysis`.

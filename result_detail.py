@@ -1,5 +1,6 @@
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sqlite3
+from datetime import date
 
 import streamlit as st
 import pandas as pd
@@ -66,6 +67,159 @@ def _to_uniform_canvas(img, target_w=260, target_h=260, bg=245):
     y = (target_h - src.height) // 2
     base.paste(src, (x, y))
     return base
+
+
+def _resolve_existing_image_path(path_str):
+    raw_path = str(path_str or '').strip()
+    if raw_path == '':
+        return None
+
+    direct_path = Path(raw_path)
+    if direct_path.exists():
+        return direct_path
+
+    posix_name = Path(raw_path.replace('\\', '/')).name
+    windows_name = PureWindowsPath(raw_path).name
+    for filename in (posix_name, windows_name):
+        filename = str(filename or '').strip()
+        if filename == '':
+            continue
+        fallback_path = Path(__file__).parent / 'uploads' / filename
+        if fallback_path.exists():
+            return fallback_path
+
+    return None
+
+
+def _is_experiment_older_than_two_days(experiment_row):
+    if not isinstance(experiment_row, dict):
+        return False
+    raw_date = str(experiment_row.get('experiment_date') or '').strip()
+    if raw_date == '':
+        return False
+    try:
+        exp_date = date.fromisoformat(raw_date)
+    except ValueError:
+        return False
+    return abs((date.today() - exp_date).days) > 2
+
+
+def _is_experiment_older_than_three_days(experiment_row):
+    if not isinstance(experiment_row, dict):
+        return False
+    raw_date = str(experiment_row.get('experiment_date') or '').strip()
+    if raw_date == '':
+        return False
+    try:
+        exp_date = date.fromisoformat(raw_date)
+    except ValueError:
+        return False
+    return abs((date.today() - exp_date).days) > 3
+
+
+def _prune_hidden_detail_images(detail_id, detail_entry, experiment_row):
+    if not _is_experiment_older_than_three_days(experiment_row):
+        return False
+
+    detail = dict(detail_entry.get('detail', {}) or {})
+    images = dict(detail.get('images', {}) or {})
+    keep_manual = bool(str(images.get('manual_crop_path') or '').strip())
+
+    delete_keys = [
+        'gray_path',
+        'cropped_path',
+        'cropped_trimmed_path',
+        'vertical_crop_path',
+        'recrop_path',
+    ]
+    if keep_manual:
+        delete_keys.append('original_path')
+
+    changed = False
+    for key in delete_keys:
+        path_str = str(images.get(key) or '').strip()
+        if path_str:
+            try:
+                Path(path_str).unlink(missing_ok=True)
+            except Exception:
+                pass
+            images[key] = ''
+            changed = True
+
+    updated_detail = dict(detail)
+    updated_detail['images'] = images
+
+    if not changed:
+        return False
+
+    update_upload_detail(detail_id, updated_detail)
+    upsert_upload_record({
+        'id': detail_id,
+        'original_name': detail_entry.get('original_name'),
+        'original_path': '' if keep_manual else detail_entry.get('original_path'),
+        'gray_path': '',
+        'cropped_name': detail_entry.get('cropped_name'),
+        'cropped_path': '',
+        'dark_regions_path': images.get('dark_regions_path', detail_entry.get('dark_regions_path', '')),
+        'starred': detail_entry.get('starred'),
+        'detail': updated_detail,
+    })
+    return True
+
+
+def cleanup_old_detail_images_on_startup():
+    today_key = date.today().isoformat()
+    if st.session_state.get('startup_old_detail_cleanup_day') == today_key:
+        return
+
+    init_uploads_db()
+    sync_experiment_db()
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                ur.id AS detail_id,
+                sr.experiment_id AS experiment_id
+            FROM upload_records ur
+            LEFT JOIN strip_results sr
+              ON sr.strip_id = ur.id
+            ORDER BY
+                CASE
+                    WHEN ur.id GLOB '[0-9]*' THEN CAST(ur.id AS INTEGER)
+                    ELSE NULL
+                END ASC,
+                ur.id ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    for row in rows:
+        detail_id = str(row['detail_id'])
+        detail_entry = get_upload_detail_by_id(detail_id)
+        if detail_entry is None:
+            continue
+
+        experiment_row = None
+        experiment_id = row['experiment_id']
+        if experiment_id is not None:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            try:
+                experiment_data = conn.execute(
+                    'SELECT * FROM experiments WHERE experiment_id = ? LIMIT 1',
+                    (experiment_id,),
+                ).fetchone()
+                experiment_row = dict(experiment_data) if experiment_data else None
+            finally:
+                conn.close()
+
+        _prune_hidden_detail_images(detail_id, detail_entry, experiment_row)
+
+    st.session_state['startup_old_detail_cleanup_day'] = today_key
 
 
 def _r4(v):
@@ -359,8 +513,8 @@ def _redo_detail_processing(detail_id, detail_entry):
     original_path = str(images.get('manual_crop_path') or images.get('original_path') or detail_entry.get('original_path') or '').strip()
     if not original_path:
         raise ValueError('Original image path not found.')
-    source_path = Path(original_path)
-    if not source_path.exists():
+    source_path = _resolve_existing_image_path(original_path)
+    if source_path is None:
         raise ValueError('Original image file does not exist.')
 
     with Image.open(source_path) as src_img:
@@ -470,8 +624,8 @@ def _clear_manual_crop(detail_id, detail):
 def _render_original_crop_editor(detail_id, detail, original_path):
     if not original_path:
         return
-    p = Path(original_path)
-    if not p.exists():
+    p = _resolve_existing_image_path(original_path)
+    if p is None:
         return
 
     with Image.open(p) as src_img:
@@ -559,15 +713,6 @@ def render_insight_detail_page(detail_id):
         st.warning('Detail record not found in experiment_data.db.')
         return
 
-    detail = detail_entry.get('detail', {})
-    images = detail.get('images', {})
-    vertical_crop_reason = detail.get('vertical_crop_reason', '')
-    line_detection_status = detail.get('line_detection_status', '')
-    confidence_score = detail.get('confidence_score', None)
-    quality_flags = list(detail.get('quality_flags', []) or [])
-    trim_percent_used = int(detail.get('trim_percent_used', 20) or 20)
-    original_path = images.get('original_path', detail_entry.get('original_path', ''))
-
     sync_experiment_db()
     strip_row = None
     experiment_row = None
@@ -581,6 +726,18 @@ def render_insight_detail_page(detail_id):
                 experiment_display_row = _apply_strip_override_to_experiment_row(experiment_row, strip_row)
         finally:
             conn.close()
+
+    if _prune_hidden_detail_images(detail_id, detail_entry, experiment_row):
+        detail_entry = get_upload_detail_by_id(detail_id)
+
+    detail = detail_entry.get('detail', {})
+    images = detail.get('images', {})
+    vertical_crop_reason = detail.get('vertical_crop_reason', '')
+    line_detection_status = detail.get('line_detection_status', '')
+    confidence_score = detail.get('confidence_score', None)
+    quality_flags = list(detail.get('quality_flags', []) or [])
+    trim_percent_used = int(detail.get('trim_percent_used', 20) or 20)
+    original_path = images.get('original_path', detail_entry.get('original_path', ''))
 
     edit_key = f'detail_edit_mode_{detail_id}'
     prev_edit_key = f'detail_prev_edit_mode_{detail_id}'
@@ -687,7 +844,7 @@ def render_insight_detail_page(detail_id):
 
     _render_original_crop_editor(detail_id, detail, original_path)
 
-    show_paths = [
+    default_show_paths = [
         ('1. Original', original_path),
         ('1b. Manual Crop', images.get('manual_crop_path', '')),
         ('2. Grayscale', images.get('gray_path', detail_entry.get('gray_path', ''))),
@@ -698,6 +855,16 @@ def render_insight_detail_page(detail_id):
         ('7. Dark Regions Overlay', images.get('dark_regions_path', detail_entry.get('dark_regions_path', ''))),
         ('8. Re-Crop Overlay', images.get('recrop_path', '')),
     ]
+    if _is_experiment_older_than_two_days(experiment_row):
+        primary_caption = '1b. Manual Crop' if images.get('manual_crop_path', '') else '1. Original'
+        primary_path = images.get('manual_crop_path', '') or original_path
+        show_paths = [
+            (primary_caption, primary_path),
+            ('4. Cropped Vertical Overlay', images.get('cropped_vertical_path', images.get('cropped_path', detail_entry.get('cropped_path', '')))),
+            ('7. Dark Regions Overlay', images.get('dark_regions_path', detail_entry.get('dark_regions_path', ''))),
+        ]
+    else:
+        show_paths = default_show_paths
     cols = st.columns(3)
     col_idx = 0
     for caption, img_path in show_paths:
@@ -712,8 +879,8 @@ def render_insight_detail_page(detail_id):
                 if vertical_crop_reason in reason_map:
                     st.info(reason_map[vertical_crop_reason])
             continue
-        p = Path(img_path)
-        if not p.exists():
+        p = _resolve_existing_image_path(img_path)
+        if p is None:
             continue
         with cols[col_idx % 3]:
             img = Image.open(p)

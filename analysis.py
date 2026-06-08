@@ -49,6 +49,7 @@ GROUPING_CANDIDATE_COLUMNS = [
     'experiment_date',
     'operator',
     'condition',
+    'sample_equivalent_mg_ml',
     'nitrocellulose_material',
     'cassette',
     'sample_pad_material',
@@ -463,7 +464,6 @@ def _compute_group_scores(group_df, group_cols=None):
 
     row = {
         'experiment_title': _joined_titles(group_df['experiment_title']),
-        'experiment_ids': ', '.join([str(int(x)) for x in pd.to_numeric(group_df['experiment_id'], errors='coerce').dropna().astype(int).drop_duplicates().tolist()]),
         'strip_count': int(len(valid_df)),
         'competitive_response_score': _clip01(competitive_raw),
         'dynamic_range_raw': dynamic_range_raw,
@@ -500,7 +500,6 @@ def _build_analysis_table(df, group_cols=None, display_group_cols=None, included
     leading_cols = [col for col in display_group_cols if col in result_df.columns]
     display_cols = leading_cols + [
         'experiment_title',
-        'experiment_ids',
         'strip_count',
         'competitive_response_score',
         'dynamic_range_raw',

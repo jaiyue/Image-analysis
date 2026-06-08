@@ -575,6 +575,12 @@ def _load_uploaded_image(uploaded, name):
     return src_img.convert('RGB'), image_dt, 'image'
 
 
+def _file_kind_notice(file_kind):
+    if file_kind == 'dng-preview':
+        return 'DNG RAW decode failed. Using embedded preview converted to PNG for analysis and saving.'
+    return ''
+
+
 def _extract_datetime_from_filename(name):
     if not name:
         return None
@@ -2086,7 +2092,7 @@ def render_library_page():
         accept_multiple_files=True,
         type=['png', 'jpg', 'jpeg', 'gif', 'tif', 'tiff', 'dng', 'csv']
     )
-    st.caption('DNG files are converted inside the app. If RAW decoding is unavailable for a phone model, the largest embedded preview is used and the original DNG capture time is still read when present.')
+    st.caption('DNG files are converted inside the app. If RAW decoding is unavailable for a phone model, the largest embedded preview is converted to PNG and used, while the original DNG capture time is still read when present.')
 
     if 'library_id_counter' not in st.session_state:
         st.session_state['library_id_counter'] = 0
@@ -2225,6 +2231,7 @@ def render_library_page():
             confidence_score = analysis.get("confidence_score", 0.0)
             quality_flags = list(analysis.get("quality_flags", []) or [])
             trim_percent_used = analysis.get("trim_percent_used", 20)
+            file_kind_notice = _file_kind_notice(file_kind)
             auto_starred = _should_auto_star(analysis)
             stored_starred = get_starred_status(img_id)
             effective_starred = bool(stored_starred or auto_starred)
@@ -2245,7 +2252,7 @@ def render_library_page():
                 with id_col:
                     st.markdown(f"ID\n\n`{img_id}`")
                     if file_kind == 'dng-preview':
-                        st.caption('DNG preview')
+                        st.caption('DNG preview → PNG')
                     elif file_kind == 'dng-raw':
                         st.caption('DNG RAW')
                     elif file_kind == 'dng':
@@ -2267,6 +2274,8 @@ def render_library_page():
                         st.dataframe(mean_only_df, width='stretch')
                     else:
                         st.info('No dark value table available.')
+                    if file_kind_notice:
+                        st.warning(file_kind_notice)
                     status_text = str(line_detection_status or 'failed').replace('_', ' ').title()
                     confidence_text = f'{float(confidence_score or 0.0):.2f}'
                     if line_detection_status == 'good':
@@ -2281,6 +2290,8 @@ def render_library_page():
                 with cols[1]:
                     st.info(f"No dark line regions detected: {name}")
                 with cols[2]:
+                    if file_kind_notice:
+                        st.warning(file_kind_notice)
                     st.error('Detection: Failed (0.00)')
 
             image_changed_value = cols[2].text_input(
@@ -2366,6 +2377,7 @@ def render_library_page():
                     'trim_percent_used': trim_percent_used,
                     'recrop_results_count': int(analysis.get('recrop_results_count', 0) or 0),
                     'source_file_kind': file_kind,
+                    'source_conversion_notice': _file_kind_notice(file_kind) or None,
                     'capture_datetime': image_dt.isoformat(timespec='seconds') if image_dt else None,
                 }
                 entry = {

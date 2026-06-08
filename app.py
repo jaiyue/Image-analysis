@@ -12,6 +12,7 @@ from analysis import render_analysis_page
 from human_review import render_human_review_page
 from database import render_database_page
 from db_backup import render_database_backup_page
+from result_detail import cleanup_old_detail_images_on_startup
 
 st.set_page_config(
     page_title='Image Analysis Studio',
@@ -76,6 +77,7 @@ def _theme_is_dark():
 def main():
     apply_custom_theme(dark_mode_enabled=_theme_is_dark())
     apply_minor_ui_fixes()
+    cleanup_old_detail_images_on_startup()
     render_sidebar_brand()
 
     selected_page_label = render_sidebar_navigation()
