@@ -407,16 +407,12 @@ def apply_custom_theme(dark_mode_enabled=False):
             display: inline-flex !important;
             align-items: center !important;
             gap: 0 !important;
-            margin-left: 1.35rem !important;
+            margin-left: 0 !important;
             min-height: 1.55rem !important;
             max-width: 100% !important;
             overflow: visible !important;
             padding: 0.12rem 0.45rem !important;
             position: relative !important;
-        }}
-
-        .stApp div[data-testid='stMultiSelect'] [data-baseweb='select']:focus-within [data-baseweb='tag'] {{
-            margin-left: 0 !important;
         }}
 
         .stApp div[data-testid='stMultiSelect'] [data-baseweb='tag'] span,

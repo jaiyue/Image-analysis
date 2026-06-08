@@ -218,11 +218,12 @@ def _load_distinct_values(df, columns):
     return sorted(values)
 
 
-def _multiselect_with_existing_state(label, options, default, key, format_func=None):
+def _multiselect_with_existing_state(label, options, default, key, format_func=None, label_visibility='visible'):
     kwargs = {
         'label': label,
         'options': options,
         'key': key,
+        'label_visibility': label_visibility,
     }
     if format_func is not None:
         kwargs['format_func'] = format_func
@@ -355,16 +356,15 @@ def _available_custom_group_columns(df):
     return [col for col in GROUPING_CANDIDATE_COLUMNS if col in df.columns]
 
 
-def _effective_weight_caption(included_metrics):
+def _effective_weight_lines(included_metrics):
     included_metrics = [metric for metric in included_metrics if metric in WEIGHTS]
     total = sum(WEIGHTS[metric] for metric in included_metrics)
     if total <= 0:
-        return ''
-    parts = [
-        f'{_display_label(metric)} {WEIGHTS[metric] / total:.0%}'
+        return []
+    return [
+        f'- {_display_label(metric)} {WEIGHTS[metric] / total:.0%}'
         for metric in included_metrics
     ]
-    return 'Total score weights: ' + ', '.join(parts)
 
 
 def _excluded_metric_columns(included_metrics, columns):
@@ -540,11 +540,27 @@ def render_analysis_page():
         return
 
     available_group_cols = _available_custom_group_columns(df)
-    grouping_mode = st.radio(
+    grouping_row = st.columns([3.2, 1.2])
+    grouping_mode = grouping_row[0].radio(
         'Grouping',
         options=['Strict experiment match', 'Custom variables'],
         horizontal=True,
         key='analysis_grouping_mode',
+        label_visibility='collapsed',
+    )
+    grouping_row[1].markdown(
+        """
+        <style>
+        div[data-testid="stCheckbox"] {
+            margin-top: -0.35rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    show_metric_details = grouping_row[1].checkbox(
+        'Show score metric details',
+        key='analysis_show_score_metric_details',
     )
     if grouping_mode == 'Custom variables':
         custom_group_key = 'analysis_custom_group_columns'
@@ -573,34 +589,36 @@ def render_analysis_page():
         st.session_state[metric_key] = [
             metric for metric in st.session_state[metric_key] if metric in WEIGHTS
         ]
+    group_count = len(_group_analysis_rows(df, group_cols=group_cols)['_analysis_group_key'].drop_duplicates())
+    metric_header_cols = st.columns([1.4, 2.6])
+    metric_header_cols[0].markdown('Include in total score')
+    metric_header_cols[1].caption(f'Comparing {group_count} experiment group(s) from {len(df)} strip result(s).')
     included_metrics = _multiselect_with_existing_state(
         'Include in total score',
         options=list(WEIGHTS.keys()),
         default=DEFAULT_SCORE_METRICS,
         key=metric_key,
+        label_visibility='collapsed',
         format_func=_display_label,
     )
     if not included_metrics:
         st.info('Select at least one score metric to calculate total score.')
         return
 
-    group_count = len(_group_analysis_rows(df, group_cols=group_cols)['_analysis_group_key'].drop_duplicates())
-    st.caption(f'Comparing {group_count} experiment group(s) from {len(df)} strip result(s).')
-    st.caption(_effective_weight_caption(included_metrics))
-
-    st.markdown(
-        """
-        <div class="analysis-help-text">
-            <div><strong>Competitive Response Score (35%)</strong>: Pearson correlation between sample equivalent and mean T/R ratio. Range: 0-1.</div>
-            <div><strong>Dynamic Range Score (25%)</strong>: first compute <code>max(mean T/R) - min(mean T/R)</code> inside each analysis group; then normalize across all groups, with best = 1 and worst = 0.</div>
-            <div><strong>Repeatability Score (20%)</strong>: <code>1 - mean CV(T/R)</code> across repeated strips at the same concentration. Range: 0-1.</div>
-            <div><strong>Background Quality Score (10%)</strong>: mean membrane background scored as <code>1 - BG/255</code>.</div>
-            <div><strong>Reference Stability Score (10%)</strong>: <code>1 - CV(reference corrected intensity)</code> across strips. Range: 0-1.</div>
-            <div><strong>Total Score</strong>: weighted average of selected metric scores. If one selected metric is missing, the remaining selected weights are re-normalized automatically.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if show_metric_details:
+        st.markdown(
+            """
+            <div class="analysis-help-text">
+                <div><strong>Competitive Response Score (35%)</strong>: Pearson correlation between sample equivalent and mean T/R ratio. Range: 0-1.</div>
+                <div><strong>Dynamic Range Score (25%)</strong>: first compute <code>max(mean T/R) - min(mean T/R)</code> inside each analysis group; then normalize across all groups, with best = 1 and worst = 0.</div>
+                <div><strong>Repeatability Score (20%)</strong>: <code>1 - mean CV(T/R)</code> across repeated strips at the same concentration. Range: 0-1.</div>
+                <div><strong>Background Quality Score (10%)</strong>: mean membrane background scored as <code>1 - BG/255</code>.</div>
+                <div><strong>Reference Stability Score (10%)</strong>: <code>1 - CV(reference corrected intensity)</code> across strips. Range: 0-1.</div>
+                <div><strong>Total Score</strong>: weighted average of selected metric scores. If one selected metric is missing, the remaining selected weights are re-normalized automatically.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     result_df = _build_analysis_table(
         df,

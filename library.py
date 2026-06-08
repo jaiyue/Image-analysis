@@ -1635,11 +1635,11 @@ def _render_experiment_selector():
         with mode_row[1]:
             previous_title = _selectbox_with_state(
                 st,
-                'Use previous experiment',
+                'Previous experiment',
                 previous_options,
                 key='library_previous_experiment_title',
                 default_index=0,
-                label_visibility='collapsed',
+                label_visibility='visible',
             )
         previous_title_value = '' if previous_title == previous_none_label else previous_title
         previous_row = _load_experiment_row_by_title(previous_title_value) if previous_title_value else {}
@@ -1658,14 +1658,6 @@ def _render_experiment_selector():
             st.session_state[previous_applied_key] = current_apply_title
 
         form_values = {}
-        date_col, changed_col, title_col = st.columns([1, 2, 1.4])
-        form_values['experiment_date'] = _date_input_with_state(
-            date_col,
-            label_with_required('experiment_date', required=True),
-            key='library_exp_experiment_date',
-            default_value=date.today(),
-        )
-
         default_changed_values = st.session_state.get('library_exp_changed_multiselect')
         if not default_changed_values:
             default_changed_values = recent_changed_values
@@ -1674,14 +1666,14 @@ def _render_experiment_selector():
         default_changed_values = [v for v in default_changed_values or [] if v in changed_options]
 
         changed_values = _multiselect_with_state(
-            changed_col,
+            st,
             label_with_required('changed', required=True),
-        changed_options,
-        key='library_exp_changed_multiselect',
-        default_values=default_changed_values,
-        placeholder='Select one or more experiment variables',
-        format_func=_display_label,
-    )
+            changed_options,
+            key='library_exp_changed_multiselect',
+            default_values=default_changed_values,
+            placeholder='Select one or more experiment variables',
+            format_func=_display_label,
+        )
         changed_values = [v for v in changed_values if v in changed_options]
         changed_ui = _join_changed_fields(changed_values)
         primary_changed = changed_values[0] if changed_values else ''
@@ -1689,12 +1681,23 @@ def _render_experiment_selector():
             st.session_state['library_changed_field'] = primary_changed
             st.session_state['library_exp_changed_selector'] = primary_changed
 
+        top_form_cols = st.columns([1, 1.8, 0.9])
+        form_values['experiment_date'] = _date_input_with_state(
+            top_form_cols[0],
+            label_with_required('experiment_date', required=True),
+            key='library_exp_experiment_date',
+            default_value=date.today(),
+        )
         generated_title = _build_experiment_title(changed_values, form_values['experiment_date'])
         previous_auto_title = st.session_state.get('library_exp_title_auto_value')
         current_title = st.session_state.get('library_exp_experiment_title', '')
         if 'library_exp_auto_title_enabled' not in st.session_state:
             st.session_state['library_exp_auto_title_enabled'] = True
-        auto_title_enabled = title_col.checkbox(
+        top_form_cols[2].markdown(
+            "<div style='height: 0.8rem;'></div>",
+            unsafe_allow_html=True,
+        )
+        auto_title_enabled = top_form_cols[2].checkbox(
             'Auto title',
             key='library_exp_auto_title_enabled',
         )
@@ -1702,14 +1705,21 @@ def _render_experiment_selector():
             st.session_state['library_exp_experiment_title'] = generated_title
         st.session_state['library_exp_title_auto_value'] = generated_title
         form_values['experiment_title'] = _text_input_with_state(
-            title_col,
+            top_form_cols[1],
             label_with_required('experiment_title', required=True),
             key='library_exp_experiment_title',
             default_value=generated_title,
             placeholder='Auto-generated',
         )
-        if not auto_title_enabled:
-            title_col.caption(f'Suggested: {generated_title}')
+        suggested_text = f'Suggested: {generated_title}' if not auto_title_enabled else '&nbsp;'
+        top_form_cols[2].markdown(
+            (
+                "<div style='min-height: 1.1rem; margin-top: -0.15rem; "
+                "font-size: 0.875rem; color: rgba(49, 51, 63, 0.6);'>"
+                f"{suggested_text}</div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
         show_specs = [s for s in experiment_specs if s['ui'] not in set(changed_values)]
         specs_by_ui = {s['ui']: s for s in show_specs}

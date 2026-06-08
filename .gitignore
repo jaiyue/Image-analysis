@@ -6,3 +6,4 @@ invoice-dashboard/
 test/*
 test/
 uploads/
+database_backups/
