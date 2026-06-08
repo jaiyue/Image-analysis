@@ -113,10 +113,19 @@ def _migrate_upload_records_schema_v2():
             except Exception:
                 detail = {}
             vertical_crop_reason = detail.get('vertical_crop_reason') if isinstance(detail, dict) else None
-            valid_strip = 1 if (test_corrected is not None and reference_corrected is not None) else 0
+            line_detection_status = detail.get('line_detection_status') if isinstance(detail, dict) else None
+            confidence_score = detail.get('confidence_score') if isinstance(detail, dict) else None
+            detail_quality_flags = detail.get('quality_flags') if isinstance(detail, dict) else []
+            if not isinstance(detail_quality_flags, list):
+                detail_quality_flags = []
+            valid_strip = 1 if (
+                test_corrected is not None
+                and reference_corrected is not None
+                and line_detection_status != 'failed'
+            ) else 0
             failure_reason = None
             if not valid_strip:
-                failure_reason = vertical_crop_reason or 'line_detection_incomplete'
+                failure_reason = line_detection_status or vertical_crop_reason or 'line_detection_incomplete'
             elif vertical_crop_reason and vertical_crop_reason not in ('ok', 'single_line_cropped'):
                 failure_reason = vertical_crop_reason
 
@@ -127,7 +136,16 @@ def _migrate_upload_records_schema_v2():
                 quality_flags.append('missing_background')
             if ratio is None:
                 quality_flags.append('missing_test_reference_ratio')
-            quality_flags_text = ','.join(quality_flags) if quality_flags else None
+            if line_detection_status and line_detection_status != 'good':
+                quality_flags.append(line_detection_status)
+            if confidence_score is not None:
+                try:
+                    if float(confidence_score) < 0.70:
+                        quality_flags.append('low_detection_confidence')
+                except Exception:
+                    pass
+            quality_flags.extend(detail_quality_flags)
+            quality_flags_text = ','.join(sorted(set(quality_flags))) if quality_flags else None
 
             conn.execute(
                 """

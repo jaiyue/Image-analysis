@@ -204,6 +204,8 @@ EXPERIMENT_TITLE_CODES = {
 
 
 def _should_auto_star(analysis):
+    if analysis.get('line_detection_status'):
+        return analysis.get('line_detection_status') != 'good'
     return int(analysis.get('recrop_results_count', 0) or 0) != 2
 
 
@@ -857,6 +859,9 @@ def _upsert_strip_results_snapshot(
     ratio_val,
     ct_bg_sum_val,
     vertical_crop_reason,
+    line_detection_status=None,
+    confidence_score=None,
+    quality_flags=None,
 ):
     conn = sqlite3.connect(EXPERIMENT_DB_PATH)
     try:
@@ -872,21 +877,36 @@ def _upsert_strip_results_snapshot(
         if ratio is not None and abs(ratio) > 1e-12:
             reference_test_ratio = 1.0 / ratio
 
-        valid_strip = 1 if (test_corrected is not None and reference_corrected is not None) else 0
+        line_detection_status = (line_detection_status or '').strip() or None
+        quality_flags = list(quality_flags or [])
+        valid_strip = 1 if (
+            test_corrected is not None
+            and reference_corrected is not None
+            and line_detection_status != 'failed'
+        ) else 0
         failure_reason = None
         if not valid_strip:
-            failure_reason = vertical_crop_reason or 'line_detection_incomplete'
+            failure_reason = line_detection_status or vertical_crop_reason or 'line_detection_incomplete'
         elif vertical_crop_reason and vertical_crop_reason not in ('ok', 'single_line_cropped'):
             failure_reason = vertical_crop_reason
 
-        quality_flags = []
+        combined_quality_flags = []
         if vertical_crop_reason and vertical_crop_reason != 'ok':
-            quality_flags.append(vertical_crop_reason)
+            combined_quality_flags.append(vertical_crop_reason)
         if bg is None:
-            quality_flags.append('missing_background')
+            combined_quality_flags.append('missing_background')
         if ratio is None:
-            quality_flags.append('missing_test_reference_ratio')
-        quality_flags_text = ','.join(quality_flags) if quality_flags else None
+            combined_quality_flags.append('missing_test_reference_ratio')
+        if line_detection_status and line_detection_status != 'good':
+            combined_quality_flags.append(line_detection_status)
+        if confidence_score is not None:
+            try:
+                if float(confidence_score) < 0.70:
+                    combined_quality_flags.append('low_detection_confidence')
+            except Exception:
+                pass
+        combined_quality_flags.extend(quality_flags)
+        quality_flags_text = ','.join(sorted(set(combined_quality_flags))) if combined_quality_flags else None
 
         conn.execute(
             """
@@ -2201,6 +2221,9 @@ def render_library_page():
             ratio_val = analysis["ratio"]
             ct_bg_sum_val = analysis.get("ct_bg_sum")
             vertical_crop_reason = analysis["vertical_crop_reason"]
+            line_detection_status = analysis.get("line_detection_status", "failed")
+            confidence_score = analysis.get("confidence_score", 0.0)
+            quality_flags = list(analysis.get("quality_flags", []) or [])
             trim_percent_used = analysis.get("trim_percent_used", 20)
             auto_starred = _should_auto_star(analysis)
             stored_starred = get_starred_status(img_id)
@@ -2244,11 +2267,21 @@ def render_library_page():
                         st.dataframe(mean_only_df, width='stretch')
                     else:
                         st.info('No dark value table available.')
+                    status_text = str(line_detection_status or 'failed').replace('_', ' ').title()
+                    confidence_text = f'{float(confidence_score or 0.0):.2f}'
+                    if line_detection_status == 'good':
+                        cols[2].success(f'Detection: {status_text} ({confidence_text})')
+                    elif line_detection_status == 'needs_review':
+                        cols[2].warning(f'Detection: {status_text} ({confidence_text})')
+                    else:
+                        cols[2].error(f'Detection: {status_text} ({confidence_text})')
+                    if quality_flags:
+                        cols[2].caption('Review flags: ' + ', '.join(str(flag).replace('_', ' ') for flag in quality_flags))
             else:
                 with cols[1]:
                     st.info(f"No dark line regions detected: {name}")
                 with cols[2]:
-                    st.empty()
+                    st.error('Detection: Failed (0.00)')
 
             image_changed_value = cols[2].text_input(
                 label_with_required(selected_changed_field, required=True),
@@ -2325,6 +2358,11 @@ def render_library_page():
                         'recrop_path': str(recrop_path) if recrop_path.exists() else '',
                     },
                     'vertical_crop_reason': vertical_crop_reason,
+                    'line_detection_status': line_detection_status,
+                    'confidence_score': confidence_score,
+                    'quality_flags': quality_flags,
+                    'line_candidates': analysis.get('line_candidates', []),
+                    'selected_line_count': int(analysis.get('selected_line_count', 0) or 0),
                     'trim_percent_used': trim_percent_used,
                     'recrop_results_count': int(analysis.get('recrop_results_count', 0) or 0),
                     'source_file_kind': file_kind,
@@ -2354,6 +2392,9 @@ def render_library_page():
                     ratio_val=(round(float(ratio_val), 4) if ratio_val is not None else None),
                     ct_bg_sum_val=(round(float(ct_bg_sum_val), 4) if ct_bg_sum_val is not None else None),
                     vertical_crop_reason=vertical_crop_reason,
+                    line_detection_status=line_detection_status,
+                    confidence_score=confidence_score,
+                    quality_flags=quality_flags,
                 )
 
                 if save_image_clicked:

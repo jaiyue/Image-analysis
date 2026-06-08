@@ -44,6 +44,8 @@ STRIP_RESULTS_DISPLAY_FIELDS = [
 
 
 def _should_auto_star(analysis):
+    if analysis.get('line_detection_status'):
+        return analysis.get('line_detection_status') != 'good'
     return int(analysis.get('recrop_results_count', 0) or 0) != 2
 
 
@@ -199,7 +201,18 @@ def _detail_output_paths(detail_id, detail_entry, images):
     }
 
 
-def _update_strip_results_analysis(strip_id, c_val, t_val, bg_val, ratio_val, ct_bg_sum_val, vertical_crop_reason):
+def _update_strip_results_analysis(
+    strip_id,
+    c_val,
+    t_val,
+    bg_val,
+    ratio_val,
+    ct_bg_sum_val,
+    vertical_crop_reason,
+    line_detection_status=None,
+    confidence_score=None,
+    quality_flags=None,
+):
     conn = sqlite3.connect(DB_PATH)
     try:
         test_raw = float(t_val) if t_val is not None else None
@@ -213,21 +226,36 @@ def _update_strip_results_analysis(strip_id, c_val, t_val, bg_val, ratio_val, ct
         if ratio is not None and abs(ratio) > 1e-12:
             reference_test_ratio = 1.0 / ratio
 
-        valid_strip = 1 if (test_corrected is not None and reference_corrected is not None) else 0
+        line_detection_status = (line_detection_status or '').strip() or None
+        quality_flags = list(quality_flags or [])
+        valid_strip = 1 if (
+            test_corrected is not None
+            and reference_corrected is not None
+            and line_detection_status != 'failed'
+        ) else 0
         failure_reason = None
         if not valid_strip:
-            failure_reason = vertical_crop_reason or 'line_detection_incomplete'
+            failure_reason = line_detection_status or vertical_crop_reason or 'line_detection_incomplete'
         elif vertical_crop_reason and vertical_crop_reason not in ('ok', 'single_line_cropped'):
             failure_reason = vertical_crop_reason
 
-        quality_flags = []
+        combined_quality_flags = []
         if vertical_crop_reason and vertical_crop_reason != 'ok':
-            quality_flags.append(vertical_crop_reason)
+            combined_quality_flags.append(vertical_crop_reason)
         if bg is None:
-            quality_flags.append('missing_background')
+            combined_quality_flags.append('missing_background')
         if ratio is None:
-            quality_flags.append('missing_test_reference_ratio')
-        quality_flags_text = ','.join(quality_flags) if quality_flags else None
+            combined_quality_flags.append('missing_test_reference_ratio')
+        if line_detection_status and line_detection_status != 'good':
+            combined_quality_flags.append(line_detection_status)
+        if confidence_score is not None:
+            try:
+                if float(confidence_score) < 0.70:
+                    combined_quality_flags.append('low_detection_confidence')
+            except Exception:
+                pass
+        combined_quality_flags.extend(quality_flags)
+        quality_flags_text = ','.join(sorted(set(combined_quality_flags))) if combined_quality_flags else None
 
         conn.execute(
             """
@@ -367,6 +395,11 @@ def _redo_detail_processing(detail_id, detail_entry):
     images['recrop_path'] = recrop_path if recrop_path and Path(recrop_path).exists() else ''
     detail['images'] = images
     detail['vertical_crop_reason'] = analysis.get('vertical_crop_reason', '')
+    detail['line_detection_status'] = analysis.get('line_detection_status', '')
+    detail['confidence_score'] = analysis.get('confidence_score', 0.0)
+    detail['quality_flags'] = list(analysis.get('quality_flags', []) or [])
+    detail['line_candidates'] = list(analysis.get('line_candidates', []) or [])
+    detail['selected_line_count'] = int(analysis.get('selected_line_count', 0) or 0)
     detail['trim_percent_used'] = int(analysis.get('trim_percent_used', 20) or 20)
     detail['recrop_results_count'] = int(analysis.get('recrop_results_count', 0) or 0)
     update_upload_detail(detail_id, detail)
@@ -393,6 +426,9 @@ def _redo_detail_processing(detail_id, detail_entry):
         analysis.get('ratio'),
         analysis.get('ct_bg_sum'),
         analysis.get('vertical_crop_reason', ''),
+        analysis.get('line_detection_status', ''),
+        analysis.get('confidence_score', 0.0),
+        analysis.get('quality_flags', []),
     )
 
 
@@ -526,6 +562,9 @@ def render_insight_detail_page(detail_id):
     detail = detail_entry.get('detail', {})
     images = detail.get('images', {})
     vertical_crop_reason = detail.get('vertical_crop_reason', '')
+    line_detection_status = detail.get('line_detection_status', '')
+    confidence_score = detail.get('confidence_score', None)
+    quality_flags = list(detail.get('quality_flags', []) or [])
     trim_percent_used = int(detail.get('trim_percent_used', 20) or 20)
     original_path = images.get('original_path', detail_entry.get('original_path', ''))
 
@@ -628,6 +667,23 @@ def render_insight_detail_page(detail_id):
                 st.rerun()
             except Exception as e:
                 st.error(f'Failed to delete strip result: {e}')
+
+    if line_detection_status:
+        status_text = str(line_detection_status).replace('_', ' ').title()
+        confidence_text = ''
+        if confidence_score is not None:
+            try:
+                confidence_text = f' ({float(confidence_score):.2f})'
+            except Exception:
+                confidence_text = ''
+        if line_detection_status == 'good':
+            st.success(f'Detection: {status_text}{confidence_text}')
+        elif line_detection_status == 'needs_review':
+            st.warning(f'Detection: {status_text}{confidence_text}')
+        else:
+            st.error(f'Detection: {status_text}{confidence_text}')
+        if quality_flags:
+            st.caption('Review flags: ' + ', '.join(str(flag).replace('_', ' ') for flag in quality_flags))
 
     _render_original_crop_editor(detail_id, detail, original_path)
 

@@ -667,6 +667,83 @@ def measure_line_darkness(gray_pil, regions):
     return results
 
 
+def _line_candidate_flags(row, image_height):
+    start = int(row.get('start', 0))
+    end = int(row.get('end', 0))
+    line_height = max(0, end - start)
+    edge_margin = max(3, int(round(float(image_height) * 0.03)))
+    max_height = max(4, int(round(float(image_height) * 0.18)))
+    flags = []
+    if start <= edge_margin or end >= image_height - edge_margin:
+        flags.append('edge_touching_line_candidate')
+    if line_height > max_height:
+        flags.append('thick_line_candidate')
+    if line_height < 2:
+        flags.append('thin_line_candidate')
+    return flags
+
+
+def _select_best_line_pair(rows, image_height):
+    if len(rows) < 2:
+        return [], ['line_detection_incomplete'], 0.0
+
+    scored_rows = []
+    all_flags = []
+    for row in rows:
+        flags = _line_candidate_flags(row, image_height)
+        all_flags.extend(flags)
+        scored_rows.append((row, flags))
+
+    clean_rows = [row for row, flags in scored_rows if not flags]
+    candidate_rows = clean_rows if len(clean_rows) >= 2 else [row for row, _ in scored_rows]
+    if len(clean_rows) < 2:
+        all_flags.append('line_candidates_low_confidence')
+
+    center_y = float(image_height) / 2.0
+    min_gap = max(4.0, float(image_height) * 0.08)
+    max_gap = max(min_gap + 2.0, float(image_height) * 0.70)
+    target_gap = float(image_height) * 0.28
+
+    best_pair = None
+    best_score = float('inf')
+    sorted_rows = sorted(candidate_rows, key=lambda r: int(r.get('start', 0)))
+    for i in range(len(sorted_rows)):
+        a = sorted_rows[i]
+        a_center = (float(a.get('start', 0)) + float(a.get('end', 0))) / 2.0
+        for j in range(i + 1, len(sorted_rows)):
+            b = sorted_rows[j]
+            b_center = (float(b.get('start', 0)) + float(b.get('end', 0))) / 2.0
+            gap = b_center - a_center
+            if gap < min_gap or gap > max_gap:
+                continue
+            pair_center = (a_center + b_center) / 2.0
+            gap_penalty = abs(gap - target_gap) / max(1.0, float(image_height))
+            center_penalty = abs(pair_center - center_y) / max(1.0, float(image_height))
+            thickness_penalty = (
+                float(a.get('line_height', 0)) + float(b.get('line_height', 0))
+            ) / max(1.0, float(image_height))
+            score = 0.45 * center_penalty + 0.35 * gap_penalty + 0.20 * thickness_penalty
+            if score < best_score:
+                best_score = score
+                best_pair = [a, b]
+
+    if best_pair is None:
+        all_flags.append('line_spacing_out_of_range')
+        best_pair = sorted_rows[:2]
+
+    confidence = 1.0
+    if 'line_candidates_low_confidence' in all_flags:
+        confidence -= 0.35
+    if 'line_spacing_out_of_range' in all_flags:
+        confidence -= 0.30
+    if any(flag == 'edge_touching_line_candidate' for flag in all_flags):
+        confidence -= 0.20
+    if any(flag == 'thick_line_candidate' for flag in all_flags):
+        confidence -= 0.15
+    confidence = max(0.0, min(1.0, confidence))
+    return best_pair, sorted(set(all_flags)), confidence
+
+
 def analyze_library_image(gray_pil):
     """
     Run Library-page crop/detection pipeline and return display/persist artifacts.
@@ -684,6 +761,12 @@ def analyze_library_image(gray_pil):
         "bg": None,
         "ratio": None,
         "ct_bg_sum": None,
+        "line_detection_status": "failed",
+        "confidence_score": 0.0,
+        "quality_flags": [],
+        "line_candidates": [],
+        "selected_line_count": 0,
+        "recrop_results_count": 0,
         "vertical_crop_reason": "no_vertical_lines",
         "trim_percent_used": 20,
     }
@@ -882,6 +965,11 @@ def analyze_library_image(gray_pil):
                 "bg": None,
                 "ratio": None,
                 "ct_bg_sum": None,
+                "line_detection_status": "failed",
+                "confidence_score": 0.0,
+                "quality_flags": ["line_detection_incomplete"],
+                "line_candidates": [],
+                "selected_line_count": 0,
                 "recrop_results_count": 0,
                 "trim_percent_used": int(round(trim_percent * 100)),
             }
@@ -924,6 +1012,9 @@ def analyze_library_image(gray_pil):
             recrop_profile, threshold_scale=0.85, min_region_height=2
         )
         recrop_results = measure_line_darkness(refined_crop, recrop_regions)
+        selected_results, quality_flags, confidence_score = _select_best_line_pair(
+            recrop_results, refined_crop.height
+        )
 
         recrop_overlay = refined_crop.convert('RGB')
         draw_recrop = ImageDraw.Draw(recrop_overlay)
@@ -932,16 +1023,25 @@ def analyze_library_image(gray_pil):
         for idx, row in enumerate(recrop_results, start=1):
             y0_rr = max(0, int(row['start']))
             y1_rr = min(h_ref - 1, int(row['end']))
-            draw_recrop.rectangle((0, y0_rr, w_ref - 1, y1_rr), outline=(255, 0, 0), width=2)
-            draw_recrop.text((4, max(0, y0_rr - 14)), label_map.get(idx, f"line_{idx}"), fill=(255, 0, 0))
+            is_selected = any(
+                int(row.get('start', -1)) == int(selected.get('start', -2))
+                and int(row.get('end', -1)) == int(selected.get('end', -2))
+                for selected in selected_results
+            )
+            color = (255, 0, 0) if is_selected else (255, 180, 0)
+            width = 2 if is_selected else 1
+            draw_recrop.rectangle((0, y0_rr, w_ref - 1, y1_rr), outline=color, width=width)
+            if is_selected:
+                selected_idx = selected_results.index(row) + 1 if row in selected_results else idx
+                draw_recrop.text((4, max(0, y0_rr - 14)), label_map.get(selected_idx, f"line_{selected_idx}"), fill=color)
 
         name_map = {1: 'c', 2: 't'}
         table_rows = [{
             'name': name_map.get(i, f"line_{i}"),
             'gray_mean': _r4(_to_dark_value(r.get('line_mean', 0.0)))
-        } for i, r in enumerate(recrop_results, start=1)]
-        if len(recrop_results) >= 2:
-            sorted_rows = sorted(recrop_results, key=lambda r: int(r.get('start', 0)))
+        } for i, r in enumerate(selected_results, start=1)]
+        if len(selected_results) >= 2:
+            sorted_rows = sorted(selected_results, key=lambda r: int(r.get('start', 0)))
             upper_end = int(sorted_rows[0].get('end', 0))
             lower_start = int(sorted_rows[1].get('start', 0))
             bg_y0 = max(0, upper_end + 1)
@@ -966,6 +1066,34 @@ def analyze_library_image(gray_pil):
                 table_rows.append({'name': 'ratio', 'gray_mean': ratio_val})
             ct_bg_sum_val = _r4(float((c_val - bg_val) + (t_val - bg_val)))
             table_rows.append({'name': '(c-bg)+(t-bg)', 'gray_mean': ct_bg_sum_val})
+        if bg_val is None:
+            quality_flags.append('missing_background')
+        if ratio_val is None:
+            quality_flags.append('missing_test_reference_ratio')
+        min_signal = None
+        if c_val is not None and t_val is not None and bg_val is not None:
+            min_signal = min(float(c_val) - float(bg_val), float(t_val) - float(bg_val))
+            if min_signal < 2.0:
+                quality_flags.append('low_signal_over_background')
+
+        quality_flags = sorted(set(quality_flags))
+        if len(selected_results) < 2:
+            status = 'failed'
+        elif confidence_score < 0.70 or quality_flags:
+            status = 'needs_review'
+        else:
+            status = 'good'
+
+        line_candidates = []
+        for row in recrop_results:
+            candidate = {
+                "start": int(row.get("start", 0)),
+                "end": int(row.get("end", 0)),
+                "height": int(row.get("line_height", 0)),
+                "darkness": _r4(row.get("darkness")),
+                "flags": _line_candidate_flags(row, h_ref),
+            }
+            line_candidates.append(candidate)
 
         return {
             "analysis_img_trimmed": analysis_img_trimmed_local,
@@ -977,21 +1105,38 @@ def analyze_library_image(gray_pil):
             "bg": _r4(bg_val),
             "ratio": ratio_val,
             "ct_bg_sum": ct_bg_sum_val,
+            "line_detection_status": status,
+            "confidence_score": _r4(confidence_score),
+            "quality_flags": quality_flags,
+            "line_candidates": line_candidates,
+            "selected_line_count": len(selected_results),
             "recrop_results_count": len(recrop_results),
             "trim_percent_used": int(round(trim_percent * 100)),
         }
 
     trim_schedule = [0.20, 0.15, 0.10, 0.05, 0.00]
     best_pass = None
+    status_rank = {"failed": 0, "needs_review": 1, "good": 2}
+
+    def _pass_score(pass_result):
+        status = pass_result.get("line_detection_status", "failed")
+        return (
+            status_rank.get(status, 0),
+            float(pass_result.get("confidence_score", 0.0) or 0.0),
+            int(pass_result.get("selected_line_count", 0) or 0),
+            int(pass_result.get("recrop_results_count", 0) or 0),
+            -len(pass_result.get("quality_flags", []) or []),
+        )
+
     for trim_percent in trim_schedule:
         pass_result = _run_trim_pass(analysis_img, trim_percent)
         if best_pass is None:
             best_pass = pass_result
-        if int(pass_result.get("recrop_results_count", 0)) >= 2:
+        if _pass_score(pass_result) > _pass_score(best_pass):
+            best_pass = pass_result
+        if pass_result.get("line_detection_status") == "good":
             best_pass = pass_result
             break
-        if int(pass_result.get("recrop_results_count", 0)) > int(best_pass.get("recrop_results_count", 0)):
-            best_pass = pass_result
 
     result["analysis_img_trimmed"] = best_pass.get("analysis_img_trimmed")
     result["cropped_overlay"] = best_pass.get("cropped_overlay")
@@ -1002,6 +1147,12 @@ def analyze_library_image(gray_pil):
     result["bg"] = best_pass.get("bg")
     result["ratio"] = best_pass.get("ratio")
     result["ct_bg_sum"] = best_pass.get("ct_bg_sum")
+    result["line_detection_status"] = best_pass.get("line_detection_status", "failed")
+    result["confidence_score"] = best_pass.get("confidence_score", 0.0)
+    result["quality_flags"] = best_pass.get("quality_flags", [])
+    result["line_candidates"] = best_pass.get("line_candidates", [])
+    result["selected_line_count"] = best_pass.get("selected_line_count", 0)
+    result["recrop_results_count"] = best_pass.get("recrop_results_count", 0)
     result["trim_percent_used"] = best_pass.get("trim_percent_used", 20)
     return result
 
