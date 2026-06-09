@@ -230,6 +230,15 @@ def render_insights_page():
         st.info('No insight data yet. Process images in Library first.')
         return
 
+    results_state_key = 'results_persisted_filter_state'
+    results_restore_key = 'results_restore_filter_state'
+    if st.session_state.get(results_restore_key):
+        persisted_state = st.session_state.get(results_state_key, {})
+        if isinstance(persisted_state, dict):
+            for key, value in persisted_state.items():
+                st.session_state[key] = value
+        st.session_state[results_restore_key] = False
+
     table_df['raw_c'] = pd.to_numeric(table_df['c'], errors='coerce')
     table_df['raw_t'] = pd.to_numeric(table_df['t'], errors='coerce')
     table_df['bg_num'] = pd.to_numeric(table_df['bg'], errors='coerce')
@@ -242,7 +251,13 @@ def render_insights_page():
     st.caption('Ratio is the normalized T/R metric. Corrected total helps distinguish strips with similar ratios but different absolute color intensity.')
 
     filter_cols = st.columns([1.6, 2.0, 2.0, 1.3, 1.4])
-    id_keyword = filter_cols[0].text_input('Filter ID', value='', placeholder='e.g. 00001')
+    if 'results_filter_id_keyword' not in st.session_state:
+        st.session_state['results_filter_id_keyword'] = ''
+    id_keyword = filter_cols[0].text_input(
+        'Filter ID',
+        key='results_filter_id_keyword',
+        placeholder='e.g. 00001',
+    )
     experiment_title_options = ['All']
     try:
         title_values = sorted(
@@ -255,10 +270,14 @@ def render_insights_page():
         experiment_title_options.extend(title_values)
     except Exception:
         pass
+    if 'results_experiment_title_filter' not in st.session_state:
+        st.session_state['results_experiment_title_filter'] = 'All'
+    if st.session_state['results_experiment_title_filter'] not in experiment_title_options:
+        st.session_state['results_experiment_title_filter'] = 'All'
     experiment_title_filter = filter_cols[1].selectbox(
         'Experiment title',
         options=experiment_title_options,
-        index=0,
+        key='results_experiment_title_filter',
     )
     changed_options = ['Full']
     try:
@@ -272,14 +291,26 @@ def render_insights_page():
         changed_options.extend(condition_values)
     except Exception:
         pass
-    changed_default = 'sample_equivalent_mg_ml' if 'sample_equivalent_mg_ml' in changed_options else 'Full'
+    if 'results_changed_filter' not in st.session_state:
+        st.session_state['results_changed_filter'] = 'Full'
+    if st.session_state['results_changed_filter'] not in changed_options:
+        st.session_state['results_changed_filter'] = 'Full'
     changed_filter = filter_cols[2].selectbox(
         'Changed variable',
         options=changed_options,
-        index=changed_options.index(changed_default),
+        key='results_changed_filter',
         format_func=lambda x: x if x == 'Full' else _display_label(x),
     )
-    ratio_bucket = filter_cols[3].selectbox('Ratio range', ['0-0.9', '0.9-1.1', '1.1+', 'Full'], index=3)
+    if 'results_ratio_bucket' not in st.session_state:
+        st.session_state['results_ratio_bucket'] = 'Full'
+    ratio_bucket_options = ['0-0.9', '0.9-1.1', '1.1+', 'Full']
+    if st.session_state['results_ratio_bucket'] not in ratio_bucket_options:
+        st.session_state['results_ratio_bucket'] = 'Full'
+    ratio_bucket = filter_cols[3].selectbox(
+        'Ratio range',
+        ratio_bucket_options,
+        key='results_ratio_bucket',
+    )
 
     date_series = pd.to_datetime(table_df['date'], errors='coerce').dropna()
     if not date_series.empty:
@@ -288,18 +319,35 @@ def render_insights_page():
     else:
         default_min = None
         default_max = None
-    if default_min and default_max:
-        date_range = filter_cols[4].date_input(
-            'Date range',
-            value=(default_min, default_max),
-        )
-    else:
-        date_range = (None, None)
+    date_range_key = 'results_date_range'
+    if date_range_key not in st.session_state:
+        st.session_state[date_range_key] = (default_min, default_max) if default_min and default_max else (None, None)
+    date_range = filter_cols[4].date_input(
+        'Date range',
+        key=date_range_key,
+    )
 
     option_cols = st.columns([1.2, 1.4, 1.5, 2.1])
-    star_only = option_cols[0].checkbox('Starred only', value=False)
-    ratio_grouping = option_cols[1].checkbox('Group similar ratio', value=False)
-    experiment_grouping = option_cols[2].checkbox('Group by experiment', value=True)
+    if 'results_star_only' not in st.session_state:
+        st.session_state['results_star_only'] = False
+    if 'results_ratio_grouping' not in st.session_state:
+        st.session_state['results_ratio_grouping'] = False
+    if 'results_experiment_grouping' not in st.session_state:
+        st.session_state['results_experiment_grouping'] = True
+    star_only = option_cols[0].checkbox('Starred only', key='results_star_only')
+    ratio_grouping = option_cols[1].checkbox('Group similar ratio', key='results_ratio_grouping')
+    experiment_grouping = option_cols[2].checkbox('Group by experiment', key='results_experiment_grouping')
+
+    st.session_state[results_state_key] = {
+        'results_filter_id_keyword': id_keyword,
+        'results_experiment_title_filter': experiment_title_filter,
+        'results_changed_filter': changed_filter,
+        'results_ratio_bucket': ratio_bucket,
+        'results_date_range': date_range,
+        'results_star_only': star_only,
+        'results_ratio_grouping': ratio_grouping,
+        'results_experiment_grouping': experiment_grouping,
+    }
 
     filtered_df = table_df.copy()
     if id_keyword.strip():
@@ -461,5 +509,6 @@ def render_insights_page():
             st.write(_fmt_date_simple(row.get('date')))
         with row_cols[8]:
             if st.button('Detail', key=f"insight_detail_{row['id']}"):
+                st.session_state[results_restore_key] = True
                 st.query_params['insight_detail_id'] = str(row['id'])
                 st.rerun()

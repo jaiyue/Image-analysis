@@ -356,6 +356,79 @@ def _available_custom_group_columns(df):
     return [col for col in GROUPING_CANDIDATE_COLUMNS if col in df.columns]
 
 
+def _available_strip_ids(df):
+    if 'strip_id' not in df.columns or df.empty:
+        return []
+    return [str(x).strip() for x in df['strip_id'].tolist() if str(x).strip()]
+
+
+def _render_manual_strip_groups(df):
+    strip_ids = _available_strip_ids(df)
+    if not strip_ids:
+        return {}, False
+
+    max_groups = min(12, len(strip_ids))
+    group_count_key = 'analysis_custom_group_count'
+    if group_count_key not in st.session_state:
+        st.session_state[group_count_key] = 2 if len(strip_ids) >= 2 else 1
+    if int(st.session_state[group_count_key]) > max_groups:
+        st.session_state[group_count_key] = max_groups
+
+    group_count = int(
+        st.number_input(
+            'Number of groups',
+            min_value=1,
+            max_value=max_groups,
+            step=1,
+            key=group_count_key,
+        )
+    )
+
+    if group_count <= 1:
+        return {}, False
+
+    st.caption('Assign strip IDs to one of the groups below. Any unassigned strip stays in an Unassigned group.')
+
+    group_keys = [f'analysis_custom_group_{i}_strip_ids' for i in range(1, group_count + 1)]
+    active_group_keys = set(group_keys)
+    for key in list(st.session_state.keys()):
+        if not key.startswith('analysis_custom_group_') or not key.endswith('_strip_ids'):
+            continue
+        if key not in active_group_keys:
+            del st.session_state[key]
+            continue
+        st.session_state[key] = [sid for sid in st.session_state[key] if sid in strip_ids]
+
+    assignments = {}
+    duplicates = []
+    group_cols = st.columns(2)
+    for idx, key in enumerate(group_keys, start=1):
+        with group_cols[(idx - 1) % len(group_cols)]:
+            selected = st.multiselect(
+                f'Group {idx}',
+                options=strip_ids,
+                key=key,
+                default=[],
+                placeholder='Select strip IDs',
+            )
+        for strip_id in selected:
+            existing = assignments.get(strip_id)
+            if existing is not None and existing != idx:
+                if strip_id not in duplicates:
+                    duplicates.append(strip_id)
+            assignments[strip_id] = idx
+
+    if duplicates:
+        st.error('Each strip can only belong to one group. Conflicts: ' + ', '.join(sorted(set(duplicates))))
+        return {}, False
+
+    if not assignments:
+        st.info('Select strip IDs to activate manual group assignment.')
+        return {}, False
+
+    return assignments, True
+
+
 def _effective_weight_lines(included_metrics):
     included_metrics = [metric for metric in included_metrics if metric in WEIGHTS]
     total = sum(WEIGHTS[metric] for metric in included_metrics)
@@ -578,8 +651,18 @@ def render_analysis_page():
         if not selected_group_cols:
             st.info('Select at least one variable to build custom experiment groups.')
             return
-        group_cols = selected_group_cols
-        display_group_cols = selected_group_cols
+        manual_assignments, manual_active = _render_manual_strip_groups(df)
+        if manual_active:
+            manual_group_col = '_analysis_manual_group'
+            df = df.copy()
+            df[manual_group_col] = df['strip_id'].astype(str).map(
+                lambda strip_id: f'Group {manual_assignments.get(strip_id)}' if strip_id in manual_assignments else 'Unassigned'
+            )
+            group_cols = selected_group_cols + [manual_group_col]
+            display_group_cols = selected_group_cols + [manual_group_col]
+        else:
+            group_cols = selected_group_cols
+            display_group_cols = selected_group_cols
     else:
         group_cols = _build_group_key_columns(df)
         display_group_cols = []

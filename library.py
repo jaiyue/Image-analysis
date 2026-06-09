@@ -204,8 +204,9 @@ EXPERIMENT_TITLE_CODES = {
 
 
 def _should_auto_star(analysis):
-    if analysis.get('line_detection_status'):
-        return analysis.get('line_detection_status') != 'good'
+    status = str(analysis.get('line_detection_status') or '').strip()
+    if status:
+        return status == 'failed'
     return int(analysis.get('recrop_results_count', 0) or 0) != 2
 
 
@@ -679,10 +680,13 @@ def _load_existing_image_names():
     try:
         rows = conn.execute(
             """
-            SELECT original_name
-            FROM upload_records
-            WHERE original_name IS NOT NULL
-              AND TRIM(original_name) != ''
+            SELECT ur.original_name
+            FROM upload_records ur
+            LEFT JOIN strip_results sr
+              ON sr.strip_id = ur.id
+            WHERE ur.original_name IS NOT NULL
+              AND TRIM(ur.original_name) != ''
+              AND (sr.strip_id IS NULL OR sr.experiment_id IS NOT NULL)
             """
         ).fetchall()
         for r in rows:
@@ -694,6 +698,7 @@ def _load_existing_image_names():
             FROM strip_results
             WHERE image_filename IS NOT NULL
               AND TRIM(image_filename) != ''
+              AND experiment_id IS NOT NULL
             """
         ).fetchall()
         for r in rows:
@@ -1839,7 +1844,6 @@ def _render_experiment_selector():
                         st.session_state['library_selected_experiment_id'] = int(inserted_id)
                     st.session_state['library_changed_field'] = primary_changed
                     st.session_state['library_exp_changed_selector'] = primary_changed
-                    st.session_state['library_exp_changed_multiselect'] = changed_values
                     st.success('Experiment saved.')
                     st.rerun()
                 except Exception as e:
@@ -2209,7 +2213,7 @@ def render_library_page():
         selected_changed_field = PER_STRIP_CHANGED_FIELD
 
         for row_idx, (img_id, name, img, gray, enhanced, black_white, image_dt, file_sig, file_kind) in enumerate(images):
-            row_key = f'{img_id}_{row_idx}'
+            row_key = str(img_id)
             cropped_overlay = None
             recrop_overlay = None
             c_val = None
@@ -2288,11 +2292,10 @@ def render_library_page():
                         st.warning(file_kind_notice)
                     status_text = str(line_detection_status or 'failed').replace('_', ' ').title()
                     confidence_text = f'{float(confidence_score or 0.0):.2f}'
-                    if line_detection_status == 'good':
-                        cols[2].success(f'Detection: {status_text} ({confidence_text})')
-                    elif line_detection_status == 'needs_review':
+                    # Keep only non-good status messages visible.
+                    if line_detection_status == 'needs_review':
                         cols[2].warning(f'Detection: {status_text} ({confidence_text})')
-                    else:
+                    elif line_detection_status and line_detection_status != 'good':
                         cols[2].error(f'Detection: {status_text} ({confidence_text})')
                     if quality_flags:
                         cols[2].caption('Review flags: ' + ', '.join(str(flag).replace('_', ' ') for flag in quality_flags))
@@ -2304,34 +2307,32 @@ def render_library_page():
                         st.warning(file_kind_notice)
                     st.error('Detection: Failed (0.00)')
 
-            image_changed_value = cols[2].text_input(
-                label_with_required(selected_changed_field, required=True),
-                key=f'library_img_changed_value_{selected_changed_field}_{row_key}',
-                placeholder='Required',
-            )
             manual_dt_text = ''
             capture_datetime_invalid = False
-            if image_dt is None:
-                cols[2].warning('Capture date/time was not found. Enter it before saving if this image needs a timestamp.')
-                manual_dt_text = cols[2].text_input(
-                    'capture datetime',
-                    key=f'library_img_capture_datetime_{row_key}',
-                    placeholder='YYYY-MM-DD HH:MM:SS',
-                )
-                parsed_manual_dt = _parse_image_datetime_text(manual_dt_text)
-                if manual_dt_text.strip() and parsed_manual_dt is None:
-                    capture_datetime_invalid = True
-                    cols[2].error('Use capture datetime format: YYYY-MM-DD HH:MM:SS')
-                elif parsed_manual_dt is not None:
-                    image_dt = parsed_manual_dt
-            else:
-                cols[2].caption(f'Capture: {image_dt.isoformat(sep=" ", timespec="seconds")}')
+            with cols[2]:
+                with st.form(key=f'library_save_image_form_{row_key}', clear_on_submit=False):
+                    image_changed_value = st.text_input(
+                        label_with_required(selected_changed_field, required=True),
+                        key=f'library_img_changed_value_{selected_changed_field}_{row_key}',
+                        placeholder='Required',
+                    )
+                    if image_dt is None:
+                        st.warning('Capture date/time was not found. Enter it before saving if this image needs a timestamp.')
+                        manual_dt_text = st.text_input(
+                            'capture datetime',
+                            key=f'library_img_capture_datetime_{row_key}',
+                            placeholder='YYYY-MM-DD HH:MM:SS',
+                        )
+                        parsed_manual_dt = _parse_image_datetime_text(manual_dt_text)
+                        if manual_dt_text.strip() and parsed_manual_dt is None:
+                            capture_datetime_invalid = True
+                            st.error('Use capture datetime format: YYYY-MM-DD HH:MM:SS')
+                        elif parsed_manual_dt is not None:
+                            image_dt = parsed_manual_dt
+                    else:
+                        st.caption(f'Capture: {image_dt.isoformat(sep=" ", timespec="seconds")}')
 
-            save_image_clicked = cols[2].button(
-                'Save',
-                key=f'library_save_image_{row_key}',
-                width='content',
-            )
+                    save_image_clicked = st.form_submit_button('Save')
 
             # Persist metadata
             try:

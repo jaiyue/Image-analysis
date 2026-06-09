@@ -62,6 +62,13 @@ In `experiment_data.db`:
   - `4. Cropped Vertical Overlay`
   - `7. Dark Regions Overlay`
 - If `today - experiment_date > 3 days`, app startup automatically deletes the hidden detail images and clears their saved paths.
+- Detection status rule:
+  - `failed` when the final dark-line detection does not end with exactly 2 detected lines
+  - when exactly 2 lines are detected, the app compares the two detected line intensities
+  - if the intensity difference is `< 20`, the result is `good`
+  - if the intensity difference is `>= 20`, the result is `needs_review`
+  - only `failed` strips are auto-starred
+  - `good` and `needs_review` are shown without auto-star, and `good` does not show a detection warning in the UI
 
 ### Analysis
 

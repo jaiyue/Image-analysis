@@ -45,8 +45,9 @@ STRIP_RESULTS_DISPLAY_FIELDS = [
 
 
 def _should_auto_star(analysis):
-    if analysis.get('line_detection_status'):
-        return analysis.get('line_detection_status') != 'good'
+    status = str(analysis.get('line_detection_status') or '').strip()
+    if status:
+        return status == 'failed'
     return int(analysis.get('recrop_results_count', 0) or 0) != 2
 
 
@@ -833,11 +834,10 @@ def render_insight_detail_page(detail_id):
                 confidence_text = f' ({float(confidence_score):.2f})'
             except Exception:
                 confidence_text = ''
-        if line_detection_status == 'good':
-            st.success(f'Detection: {status_text}{confidence_text}')
-        elif line_detection_status == 'needs_review':
+        # Keep only non-good status messages visible.
+        if line_detection_status == 'needs_review':
             st.warning(f'Detection: {status_text}{confidence_text}')
-        else:
+        elif line_detection_status and line_detection_status != 'good':
             st.error(f'Detection: {status_text}{confidence_text}')
         if quality_flags:
             st.caption('Review flags: ' + ', '.join(str(flag).replace('_', ' ') for flag in quality_flags))

@@ -1076,13 +1076,33 @@ def analyze_library_image(gray_pil):
             if min_signal < 2.0:
                 quality_flags.append('low_signal_over_background')
 
+        detected_line_count = len(recrop_results)
+        selected_line_values = [
+            float(r.get('line_mean'))
+            for r in selected_results
+            if r.get('line_mean') is not None
+        ]
+        line_contrast_delta = None
+        if len(selected_line_values) >= 2:
+            line_contrast_delta = abs(max(selected_line_values) - min(selected_line_values))
+
         quality_flags = sorted(set(quality_flags))
-        if len(selected_results) < 2:
+        if detected_line_count != 2:
             status = 'failed'
-        elif confidence_score < 0.70 or quality_flags:
-            status = 'needs_review'
-        else:
+            quality_flags.append('unexpected_line_count')
+        elif line_contrast_delta is not None and line_contrast_delta < 20.0:
             status = 'good'
+        else:
+            status = 'needs_review'
+            quality_flags.append('low_line_contrast')
+
+        quality_flags = sorted(set(quality_flags))
+        if status == 'good':
+            confidence_score = 1.0
+        elif status == 'needs_review':
+            confidence_score = 0.5
+        else:
+            confidence_score = 0.0
 
         line_candidates = []
         for row in recrop_results:
