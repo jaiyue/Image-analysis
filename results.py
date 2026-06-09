@@ -4,8 +4,9 @@ import base64
 import sqlite3
 import io
 from pathlib import Path
-from result_detail import render_insight_detail_page
+from result_detail import render_insight_detail_page, _redo_detail_processing
 from uploads_db import init_uploads_db, list_insight_rows, set_starred_status
+from uploads_db import get_upload_detail_by_id
 from ui_labels import display_label
 from database import DB_PATH
 
@@ -13,6 +14,7 @@ from database import DB_PATH
 ASSETS_DIR = Path(__file__).parent / 'assets'
 STAR_ICON_PATH = ASSETS_DIR / 'star.png'
 YELLOW_STAR_ICON_PATH = ASSETS_DIR / 'yellow_star.png'
+BLACK_STAR_ICON_PATH = ASSETS_DIR / 'black_star.png'
 
 def _sort_by_id_desc(df):
     if df.empty or 'id' not in df.columns:
@@ -35,10 +37,24 @@ def _read_icon_base64(path_str):
     return base64.b64encode(p.read_bytes()).decode('ascii')
 
 
-def _build_star_button_label(starred):
-    icon_path = YELLOW_STAR_ICON_PATH if starred else STAR_ICON_PATH
+def _build_star_button_label(starred, line_detection_status=None):
+    status = str(line_detection_status or '').strip().lower()
+    if status == 'good':
+        icon_path = YELLOW_STAR_ICON_PATH
+    elif status == 'needs_review':
+        icon_path = STAR_ICON_PATH
+    elif status == 'failed':
+        icon_path = BLACK_STAR_ICON_PATH
+    else:
+        icon_path = YELLOW_STAR_ICON_PATH if starred else STAR_ICON_PATH
     icon_b64 = _read_icon_base64(str(icon_path))
     if not icon_b64:
+        if status == 'good':
+            return '⭐'
+        if status == 'needs_review':
+            return '☆'
+        if status == 'failed':
+            return '✦'
         return '⭐' if starred else '☆'
     return f"![star](data:image/png;base64,{icon_b64})"
 
@@ -167,6 +183,22 @@ def _build_changed_specific_export_tables(filtered_df):
     return exp_df, merged
 
 
+def _redo_result_rows(row_ids):
+    updated = 0
+    failed = []
+    for row_id in [str(x).strip() for x in row_ids if str(x).strip()]:
+        detail_entry = get_upload_detail_by_id(row_id)
+        if detail_entry is None:
+            failed.append(f'{row_id}: detail record not found')
+            continue
+        try:
+            _redo_detail_processing(row_id, detail_entry)
+            updated += 1
+        except Exception as e:
+            failed.append(f'{row_id}: {e}')
+    return updated, failed
+
+
 def render_insights_page():
     detail_id = st.query_params.get('insight_detail_id')
     if detail_id:
@@ -207,7 +239,7 @@ def render_insights_page():
 
     table_df = pd.DataFrame(
         rows,
-        columns=['id', 'experiment_id', 'c', 't', 'bg', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred', 'experiment_title', 'experiment_condition', 'changed_field', 'changed_value'],
+        columns=['id', 'experiment_id', 'c', 't', 'bg', 'ratio', 'ct_bg_sum', 'date', 'time', 'starred', 'line_detection_status', 'experiment_title', 'experiment_condition', 'changed_field', 'changed_value'],
     )
     if not table_df.empty:
         table_df = _sort_by_id_desc(table_df)
@@ -248,7 +280,10 @@ def render_insights_page():
         lambda x: (1.0 / x) if pd.notna(x) and abs(float(x)) > 1e-12 else None
     )
 
-    st.caption('Ratio is the normalized T/R metric. Corrected total helps distinguish strips with similar ratios but different absolute color intensity.')
+    st.caption(
+        'Auto-star legend: good = yellow star, needs_review = white star, failed = black star. '
+        'Only failed strips are auto-starred.'
+    )
 
     filter_cols = st.columns([1.6, 2.0, 2.0, 1.3, 1.4])
     if 'results_filter_id_keyword' not in st.session_state:
@@ -327,16 +362,24 @@ def render_insights_page():
         key=date_range_key,
     )
 
-    option_cols = st.columns([1.2, 1.4, 1.5, 2.1])
-    if 'results_star_only' not in st.session_state:
-        st.session_state['results_star_only'] = False
+    option_cols = st.columns([1.35, 1.45, 1.55, 1.15])
+    star_filter_options = ['Full', 'Yellow star', 'Black star', 'None']
+    if 'results_star_filter' not in st.session_state:
+        st.session_state['results_star_filter'] = 'Full'
+    if st.session_state['results_star_filter'] not in star_filter_options:
+        st.session_state['results_star_filter'] = 'Full'
     if 'results_ratio_grouping' not in st.session_state:
         st.session_state['results_ratio_grouping'] = False
     if 'results_experiment_grouping' not in st.session_state:
         st.session_state['results_experiment_grouping'] = True
-    star_only = option_cols[0].checkbox('Starred only', key='results_star_only')
+    star_filter = option_cols[0].selectbox(
+        'Star',
+        star_filter_options,
+        key='results_star_filter',
+    )
     ratio_grouping = option_cols[1].checkbox('Group similar ratio', key='results_ratio_grouping')
     experiment_grouping = option_cols[2].checkbox('Group by experiment', key='results_experiment_grouping')
+    redo_all_clicked = option_cols[3].button('Redo all', key='insights_redo_all', width='stretch')
 
     st.session_state[results_state_key] = {
         'results_filter_id_keyword': id_keyword,
@@ -344,7 +387,7 @@ def render_insights_page():
         'results_changed_filter': changed_filter,
         'results_ratio_bucket': ratio_bucket,
         'results_date_range': date_range,
-        'results_star_only': star_only,
+        'results_star_filter': star_filter,
         'results_ratio_grouping': ratio_grouping,
         'results_experiment_grouping': experiment_grouping,
     }
@@ -356,8 +399,13 @@ def render_insights_page():
         filtered_df = filtered_df[filtered_df['experiment_title'].astype(str) == experiment_title_filter]
     if changed_filter != 'Full':
         filtered_df = filtered_df[filtered_df['experiment_condition'].astype(str) == changed_filter]
-    if star_only:
-        filtered_df = filtered_df[filtered_df['starred'].astype(bool)]
+    line_status = filtered_df['line_detection_status'].astype(str).str.strip().str.lower()
+    if star_filter == 'Yellow star':
+        filtered_df = filtered_df[line_status == 'good']
+    elif star_filter == 'Black star':
+        filtered_df = filtered_df[line_status == 'failed']
+    elif star_filter == 'None':
+        filtered_df = filtered_df[line_status == 'needs_review']
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
         if start_date is not None and end_date is not None:
@@ -458,6 +506,15 @@ def render_insights_page():
         st.info('No records matched current filters.')
         return
 
+    if redo_all_clicked:
+        with st.spinner(f'Redoing {len(filtered_df)} result(s)...'):
+            updated_count, failed_rows = _redo_result_rows(filtered_df['id'].tolist())
+        if updated_count:
+            st.success(f'Redid {updated_count} result(s).')
+        if failed_rows:
+            st.error('Failed to redo: ' + '; '.join(failed_rows[:10]))
+        st.rerun()
+
     head_cols = st.columns([0.70, 0.95, 1.5, 1.5, 0.95, 1.3, 1.3, 0.9, 1.20])
     headers = [
         'Star',
@@ -478,8 +535,9 @@ def render_insights_page():
         row_cols = st.columns([0.70, 0.95, 1.5, 1.5, 0.95, 1.3, 1.3, 0.9, 1.20])
         with row_cols[0]:
             is_starred = bool(row.get('starred'))
+            line_detection_status = row.get('line_detection_status')
             if st.button(
-                _build_star_button_label(is_starred),
+                _build_star_button_label(is_starred, line_detection_status),
                 key=f"insight_star_{row['id']}",
                 width='content',
                 type='tertiary',

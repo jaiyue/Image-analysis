@@ -60,6 +60,7 @@ def init_uploads_db():
     _migrate_detail_metrics_alignment_v2_if_needed()
     _migrate_precision_v3_if_needed()
     _migrate_bg_v4_if_needed()
+    backfill_existing_detection_states()
 
 
 def _migrate_upload_records_schema_v2():
@@ -280,6 +281,145 @@ def _migrate_meta_json_if_needed():
         upsert_upload_record(row)
 
 
+def _get_upload_meta_value(conn, key):
+    row = conn.execute(
+        'SELECT value FROM upload_meta WHERE key = ?',
+        (str(key),),
+    ).fetchone()
+    if row is None:
+        return None
+    return row['value']
+
+
+def _set_upload_meta_value(conn, key, value):
+    conn.execute(
+        """
+        INSERT INTO upload_meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(key), None if value is None else str(value)),
+    )
+
+
+def _resolve_existing_upload_image_path(record_id, original_path, original_name=None):
+    candidates = []
+    record_text = str(record_id or '').strip()
+    if record_text:
+        candidates.extend([
+            PROJECT_ROOT / 'uploads' / f'{record_text}_original.png',
+            PROJECT_ROOT / 'uploads' / f'{record_text}_original.jpg',
+            PROJECT_ROOT / 'uploads' / f'{record_text}.png',
+            PROJECT_ROOT / 'uploads' / f'{record_text}.jpg',
+        ])
+    for raw in (original_path, original_name):
+        text = str(raw or '').strip()
+        if text:
+            candidates.append(Path(text))
+            candidates.append(PROJECT_ROOT / 'uploads' / Path(text).name)
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def backfill_existing_detection_states(force=False):
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        if not force and _get_upload_meta_value(conn, 'detection_state_backfill_v1') == 'done':
+            return 0
+
+        rows = conn.execute(
+            """
+            SELECT id, original_name, original_path, detail_json, starred
+            FROM upload_records
+            ORDER BY CAST(id AS INTEGER), id
+            """
+        ).fetchall()
+
+        if not rows:
+            _set_upload_meta_value(conn, 'detection_state_backfill_v1', 'done')
+            conn.commit()
+            return 0
+
+        from PIL import Image
+        from image_processing import analyze_library_image, process_image_to_grayscale
+
+        updated = 0
+        for row in rows:
+            record_id = str(row['id'] or '').strip()
+            if not record_id:
+                continue
+
+            try:
+                detail = json.loads(row['detail_json'] or '{}')
+            except Exception:
+                detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+
+            current_status = str(detail.get('line_detection_status') or '').strip().lower()
+            original_path = detail.get('images', {}).get('original_path') if isinstance(detail.get('images'), dict) else None
+            image_path = _resolve_existing_upload_image_path(
+                record_id,
+                original_path or row['original_path'],
+                row['original_name'],
+            )
+
+            analysis = None
+            if (force or current_status not in {'good', 'needs_review', 'failed'}) and image_path is not None:
+                try:
+                    with Image.open(image_path) as src_img:
+                        original_img = src_img.convert('RGB')
+                    gray = process_image_to_grayscale(original_img.copy())
+                    analysis = analyze_library_image(gray)
+                    current_status = str(analysis.get('line_detection_status') or '').strip().lower()
+                    detail['vertical_crop_reason'] = analysis.get('vertical_crop_reason', detail.get('vertical_crop_reason', ''))
+                    detail['line_detection_status'] = analysis.get('line_detection_status', '')
+                    detail['confidence_score'] = analysis.get('confidence_score', 0.0)
+                    detail['quality_flags'] = list(analysis.get('quality_flags', []) or [])
+                    detail['line_candidates'] = list(analysis.get('line_candidates', []) or [])
+                    detail['selected_line_count'] = int(analysis.get('selected_line_count', 0) or 0)
+                    detail['trim_percent_used'] = int(analysis.get('trim_percent_used', 20) or 20)
+                    detail['recrop_results_count'] = int(analysis.get('recrop_results_count', 0) or 0)
+                except Exception:
+                    analysis = None
+                    current_status = ''
+
+            starred_value = 1 if current_status == 'failed' else 0
+            existing_starred = int(row['starred'] or 0)
+            detail_json_text = json.dumps(detail, ensure_ascii=False)
+
+            if detail_json_text != (row['detail_json'] or '') or existing_starred != starred_value:
+                conn.execute(
+                    """
+                    UPDATE upload_records
+                    SET starred = ?, detail_json = ?
+                    WHERE id = ?
+                    """,
+                    (starred_value, detail_json_text, record_id),
+                )
+                updated += 1
+
+        _set_upload_meta_value(conn, 'detection_state_backfill_v1', 'done')
+        conn.commit()
+        return updated
+    finally:
+        conn.close()
+
+
 def _to_dark_value(v):
     if v is None:
         return None
@@ -400,6 +540,7 @@ def list_insight_rows():
                     THEN SUBSTR(sr.image_upload_datetime, 12, 8)
                 END AS time,
                 COALESCE(ur.starred, 0) AS starred,
+                COALESCE(json_extract(ur.detail_json, '$.line_detection_status'), '') AS line_detection_status,
                 exp.experiment_title AS experiment_title,
                 exp.condition AS experiment_condition,
                 sr.changed_field AS changed_field,

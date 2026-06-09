@@ -54,6 +54,9 @@ In `experiment_data.db`:
 1. Filter by ID, changed field, ratio range, date, star.
 2. Review table and open `Detail` per row.
 3. Export from bottom-right floating button.
+4. Auto-star legend: `good` = yellow star, `needs_review` = white star, `failed` = black star.
+5. Only `failed` strips are auto-starred.
+6. Existing rows without detection status are backfilled from the stored images so older records follow the same rule.
 
 #### Result Detail
 
@@ -61,7 +64,7 @@ In `experiment_data.db`:
   - `1b. Manual Crop` (or `1. Original` if no manual crop)
   - `4. Cropped Vertical Overlay`
   - `7. Dark Regions Overlay`
-- If `today - experiment_date > 3 days`, app startup automatically deletes the hidden detail images and clears their saved paths.
+- If `today - experiment_date > 3 days`, app startup automatically deletes hidden intermediate detail images, but keeps the original image path so the photo can still be restored later.
 - Detection status rule:
   - `failed` when the final dark-line detection does not end with exactly 2 detected lines
   - when exactly 2 lines are detected, the app compares the two detected line intensities

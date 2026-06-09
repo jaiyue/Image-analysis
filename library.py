@@ -44,6 +44,7 @@ except Exception:
 ASSETS_DIR = Path(__file__).parent / 'assets'
 STAR_ICON_PATH = ASSETS_DIR / 'star.png'
 YELLOW_STAR_ICON_PATH = ASSETS_DIR / 'yellow_star.png'
+BLACK_STAR_ICON_PATH = ASSETS_DIR / 'black_star.png'
 REMOVE_ICON_PATH = ASSETS_DIR / 'remove.png'
 EXPERIMENT_DB_PATH = Path(__file__).parent / 'experiment_data.db'
 ANALYSIS_CACHE_VERSION = 'v2'
@@ -350,10 +351,24 @@ def _read_icon_base64(path_str):
     return base64.b64encode(p.read_bytes()).decode('ascii')
 
 
-def _build_star_button_label(starred):
-    icon_path = YELLOW_STAR_ICON_PATH if starred else STAR_ICON_PATH
+def _build_star_button_label(starred, line_detection_status=None):
+    status = str(line_detection_status or '').strip().lower()
+    if status == 'good':
+        icon_path = YELLOW_STAR_ICON_PATH
+    elif status == 'needs_review':
+        icon_path = STAR_ICON_PATH
+    elif status == 'failed':
+        icon_path = BLACK_STAR_ICON_PATH
+    else:
+        icon_path = YELLOW_STAR_ICON_PATH if starred else STAR_ICON_PATH
     icon_b64 = _read_icon_base64(str(icon_path))
     if not icon_b64:
+        if status == 'good':
+            return '⭐'
+        if status == 'needs_review':
+            return '☆'
+        if status == 'failed':
+            return '✦'
         return '⭐' if starred else '☆'
     return f"![star](data:image/png;base64,{icon_b64})"
 
@@ -1852,9 +1867,8 @@ def _render_experiment_selector():
         date_options = _load_experiment_date_options()
         title_options = _load_experiment_title_options()
         date_placeholder = 'Choose date(Optional)'
-        today_text = date.today().isoformat()
         existing_date_options = [date_placeholder] + date_options
-        default_date_index = existing_date_options.index(today_text) if today_text in existing_date_options else 0
+        default_date_index = 1 if date_options else 0
         with mode_row[1]:
             filter_cols = st.columns([1, 1.2])
             selected_date = _selectbox_with_state(
@@ -2255,7 +2269,7 @@ def render_library_page():
                 mark_col, id_col = st.columns([1, 3])
                 with mark_col:
                     if st.button(
-                        _build_star_button_label(effective_starred),
+                        _build_star_button_label(effective_starred, line_detection_status),
                         key=f'lib_star_{row_key}',
                         width='content',
                         type='tertiary',
@@ -2292,8 +2306,9 @@ def render_library_page():
                         st.warning(file_kind_notice)
                     status_text = str(line_detection_status or 'failed').replace('_', ' ').title()
                     confidence_text = f'{float(confidence_score or 0.0):.2f}'
-                    # Keep only non-good status messages visible.
-                    if line_detection_status == 'needs_review':
+                    if line_detection_status == 'good':
+                        cols[2].success(f'Detection: {status_text} ({confidence_text})')
+                    elif line_detection_status == 'needs_review':
                         cols[2].warning(f'Detection: {status_text} ({confidence_text})')
                     elif line_detection_status and line_detection_status != 'good':
                         cols[2].error(f'Detection: {status_text} ({confidence_text})')

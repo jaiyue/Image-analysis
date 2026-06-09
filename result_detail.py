@@ -124,7 +124,6 @@ def _prune_hidden_detail_images(detail_id, detail_entry, experiment_row):
 
     detail = dict(detail_entry.get('detail', {}) or {})
     images = dict(detail.get('images', {}) or {})
-    keep_manual = bool(str(images.get('manual_crop_path') or '').strip())
 
     delete_keys = [
         'gray_path',
@@ -133,8 +132,6 @@ def _prune_hidden_detail_images(detail_id, detail_entry, experiment_row):
         'vertical_crop_path',
         'recrop_path',
     ]
-    if keep_manual:
-        delete_keys.append('original_path')
 
     changed = False
     for key in delete_keys:
@@ -157,7 +154,7 @@ def _prune_hidden_detail_images(detail_id, detail_entry, experiment_row):
     upsert_upload_record({
         'id': detail_id,
         'original_name': detail_entry.get('original_name'),
-        'original_path': '' if keep_manual else detail_entry.get('original_path'),
+        'original_path': detail_entry.get('original_path'),
         'gray_path': '',
         'cropped_name': detail_entry.get('cropped_name'),
         'cropped_path': '',
@@ -342,17 +339,57 @@ def _save_optional_image(img, path_str):
     img.save(path)
 
 
+def _normalize_detail_output_path(path_value, default_path, uploads_dir):
+    path_text = str(path_value or '').strip()
+    if not path_text:
+        return str(default_path)
+    candidate = Path(path_text)
+    # Old records may still point to a different checkout; rewrite generated
+    # output files into the current project's uploads directory.
+    if candidate.parent != uploads_dir:
+        return str(default_path)
+    return str(candidate)
+
+
 def _detail_output_paths(detail_id, detail_entry, images):
     uploads_dir = Path(__file__).parent / 'uploads'
     uploads_dir.mkdir(parents=True, exist_ok=True)
     return {
-        'gray_path': str(images.get('gray_path') or detail_entry.get('gray_path') or (uploads_dir / f'{detail_id}_gray.png')),
-        'cropped_path': str(images.get('cropped_path') or detail_entry.get('cropped_path') or (uploads_dir / f'{detail_id}_cropped.png')),
-        'cropped_vertical_path': str(images.get('cropped_vertical_path') or (uploads_dir / f'{detail_id}_cropped_vertical.png')),
-        'cropped_trimmed_path': str(images.get('cropped_trimmed_path') or (uploads_dir / f'{detail_id}_cropped_trimmed.png')),
-        'vertical_crop_path': str(images.get('vertical_crop_path') or (uploads_dir / f'{detail_id}_vertical_crop.png')),
-        'dark_regions_path': str(images.get('dark_regions_path') or detail_entry.get('dark_regions_path') or (uploads_dir / f'{detail_id}_dark_regions.png')),
-        'recrop_path': str(images.get('recrop_path') or (uploads_dir / f'{detail_id}_recrop.png')),
+        'gray_path': _normalize_detail_output_path(
+            images.get('gray_path') or detail_entry.get('gray_path'),
+            uploads_dir / f'{detail_id}_gray.png',
+            uploads_dir,
+        ),
+        'cropped_path': _normalize_detail_output_path(
+            images.get('cropped_path') or detail_entry.get('cropped_path'),
+            uploads_dir / f'{detail_id}_cropped.png',
+            uploads_dir,
+        ),
+        'cropped_vertical_path': _normalize_detail_output_path(
+            images.get('cropped_vertical_path'),
+            uploads_dir / f'{detail_id}_cropped_vertical.png',
+            uploads_dir,
+        ),
+        'cropped_trimmed_path': _normalize_detail_output_path(
+            images.get('cropped_trimmed_path'),
+            uploads_dir / f'{detail_id}_cropped_trimmed.png',
+            uploads_dir,
+        ),
+        'vertical_crop_path': _normalize_detail_output_path(
+            images.get('vertical_crop_path'),
+            uploads_dir / f'{detail_id}_vertical_crop.png',
+            uploads_dir,
+        ),
+        'dark_regions_path': _normalize_detail_output_path(
+            images.get('dark_regions_path') or detail_entry.get('dark_regions_path'),
+            uploads_dir / f'{detail_id}_dark_regions.png',
+            uploads_dir,
+        ),
+        'recrop_path': _normalize_detail_output_path(
+            images.get('recrop_path'),
+            uploads_dir / f'{detail_id}_recrop.png',
+            uploads_dir,
+        ),
     }
 
 
@@ -559,7 +596,8 @@ def _redo_detail_processing(detail_id, detail_entry):
     detail['recrop_results_count'] = int(analysis.get('recrop_results_count', 0) or 0)
     update_upload_detail(detail_id, detail)
 
-    effective_starred = bool(detail_entry.get('starred') or _should_auto_star(analysis))
+    # Redo should refresh the star state to match the latest detection result.
+    effective_starred = bool(_should_auto_star(analysis))
 
     upsert_upload_record({
         'id': detail_id,
@@ -834,8 +872,9 @@ def render_insight_detail_page(detail_id):
                 confidence_text = f' ({float(confidence_score):.2f})'
             except Exception:
                 confidence_text = ''
-        # Keep only non-good status messages visible.
-        if line_detection_status == 'needs_review':
+        if line_detection_status == 'good':
+            st.success(f'Detection: {status_text}{confidence_text}')
+        elif line_detection_status == 'needs_review':
             st.warning(f'Detection: {status_text}{confidence_text}')
         elif line_detection_status and line_detection_status != 'good':
             st.error(f'Detection: {status_text}{confidence_text}')
